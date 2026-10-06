@@ -75,6 +75,7 @@ const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['
 }
 
 export const register: Register = (on, options) => {
+  on('engine.create', async (_$, e, next) => ({ ...(await next(e)), prismantis: { markdown: async () => undefined } }))
   if (options.enabled === false) return
   const style = resolveStyle(options)
   const parsed = new Map<string, ReturnType<typeof parse>>()
@@ -167,8 +168,6 @@ export const register: Register = (on, options) => {
       </Box>
     )
   })
-
-  on('engine.create', async (_$, e, next) => ({ ...(await next(e)), prismantis: { markdown: async () => undefined } }))
 
   on('prismantis.markdown', ($, e, next) => {
     const blocks = parseCached(e.text)
