@@ -366,6 +366,9 @@ test('the help screen shows every element prismantis draws', async () => {
   expect(showcaseText([])).toContain('the changed words in a deeper tint')
   expect(showcaseText([])).toContain('Files a shell command changes')
   expect(showcaseText([])).toContain('Set `diffStyle` in `/config` for the look: `card`, `full`, `marks` or `bar`')
+  expect(showcaseText([])).toContain('A new file is no diff: it shows its first 10 lines as numbered, highlighted code')
+  expect(showcaseText([])).toContain('one `Deleted` line that opens to what it held')
+  expect(showcaseText([])).toContain('one `Renamed old → new` line')
   expect(showcaseText([])).not.toContain('diffAddedColor')
 })
 
