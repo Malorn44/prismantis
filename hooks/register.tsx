@@ -11,7 +11,7 @@ import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
 import type { Fold } from './render'
-import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import { MARK, bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import { HINT, SETUP_DONE, findSetup, helpText, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
 import type { Style } from './theme'
@@ -271,7 +271,8 @@ const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['
       />
     ) : null
   }
-  const drawn = drawDiagrams(el, style, blocks, columns)
+  const hover = style.copyButtonStyle === 'hover' && style.copyButtons
+  const drawn = drawDiagrams(el, style, blocks, hover ? columns - MARK : columns)
   const Image = 'Image' in el ? el.Image : null
   if (Image) {
     for (const [i, formula] of math) {
@@ -287,9 +288,16 @@ const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['
   const elements = renderBlocks(el, notes ? { ...style, noteKey: instanceKey(notes.id) } : style, blocks, columns, drawMath(el, style, blocks, drawn), copy, folder($, el, open), tip)
   const button = reply === undefined ? null : copy(reply, 'reply', '⧉ copy reply')
   if (!button) return elements
-  return style.copyButtonStyle === 'hover'
-    ? [...elements, <el.Box position="absolute" bottom={0} right={0} display="none" hover={{ display: 'flex' }}>{button}</el.Box>]
-    : [...elements, <el.Box key="reply" alignSelf="flex-end">{button}</el.Box>]
+  if (!hover) return [...elements, <el.Box key="reply" alignSelf="flex-end">{button}</el.Box>]
+  const anchor = (top: number) => (
+    <el.Box key="reply" position="absolute" top={top} left={-2}>
+      <el.Text dimColor>⧉</el.Text>
+      <el.Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>{button}</el.Box>
+    </el.Box>
+  )
+  return elements.length > 1
+    ? [...elements.slice(0, -1), <el.Box flexDirection="column">{anchor(-1)}{elements.at(-1)}</el.Box>]
+    : [...elements, <el.Box height={1}>{anchor(0)}</el.Box>]
 }
 
 const THEME_ARGS = [...PRESET_NAMES, 'random']

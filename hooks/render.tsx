@@ -762,16 +762,27 @@ const opensWithCopy = (block: Block): boolean =>
 const holdsOnlyEmptyCode = (block: Block): boolean =>
   block.kind === 'quote' && block.blocks.length === 1 && ((block.blocks[0]!.kind === 'code' && block.blocks[0]!.lines.length === 0) || holdsOnlyEmptyCode(block.blocks[0]!))
 
+export const MARK = 2
+
+const codeLabel = (block: Extract<Block, { kind: 'code' }>): string => `── ${block.lang || 'code'}`
+
 export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], columns: number, drawn: Drawn = new Map(), copy?: CopyButton, fold?: Fold, tip?: Tip): RenderElement[] => {
   const { Box, Text } = el
   const t = style.theme
   const hover = style.copyButtonStyle === 'hover'
   const reserved = (buttons: (RenderElement | null | undefined)[]): number =>
     buttons.reduce<number>((w, button) => (button?.type === 'Button' ? w + (w ? 1 : 0) + width(`[ ${button.props.label} ]`) : w), 0)
-  const floating = (button: RenderElement | null | undefined, parts: (RenderElement | null | undefined)[], low = false, start = false) => (button ? {
-    minWidth: reserved(parts),
-    element: <Box position="absolute" {...(low ? { bottom: 0 } : { top: 0 })} {...(start ? { left: 0 } : { right: 0 })} display="none" hover={{ display: 'flex' }}>{button}</Box>,
-  } : null)
+  const fitted = (parts: (RenderElement | null | undefined)[]): RenderElement[] =>
+    parts.reduce<RenderElement[]>((kept, part) => (part && (!kept.length || reserved([...kept, part]) <= columns) ? [...kept, part] : kept), [])
+  const scopeOf = (button: RenderElement): string => `copy:${style.noteKey ?? ''}:${button.type === 'Button' ? button.props.key : ''}`
+  const floating = (kept: RenderElement[], low = false, start = false) => {
+    const scope = scopeOf(kept[0]!)
+    return {
+      needs: reserved(kept),
+      marker: <Box flexShrink={0} {...(low ? { alignSelf: 'flex-end' as const } : {})} hover={{ scope }}><Text dimColor>⧉</Text></Box>,
+      element: <Box position="absolute" {...(low ? { bottom: 0 } : { top: 0 })} {...(start ? { left: 0 } : { right: 0 })} display="none" hover={{ scope, display: 'flex' }}>{kept.flatMap((button, i) => (i ? [<Text key={`gap${i}`}> </Text>, button] : [button]))}</Box>,
+    }
+  }
   const shown = blocks.map(block => drawable(block, style.httpLinks, style.editorLinks))
   const rtlTables = shown.map(block => style.reorder && block.kind === 'table' && isRtlTable(style, block))
   const buttons = blocks.map((block, b) => {
@@ -783,7 +794,8 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
     const html = first && block.kind === 'table' ? copy?.(() => tableText(block), `html${b}`, '⧉ html', () => tableHtml(block)) : null
     return { first, second, html }
   })
-  const beside = (b: number) => (hover || !buttons[b]!.first ? columns : columns - reserved([buttons[b]!.first]) - 2)
+  const room = (b: number) => (hover && buttons[b]!.first ? columns - MARK : columns)
+  const beside = (b: number) => (!buttons[b]!.first ? columns : hover ? columns - MARK : columns - reserved([buttons[b]!.first]) - 2)
   const rendered = shown.map((block, b) => {
     const key = `b${b}`
     switch (block.kind) {
@@ -809,13 +821,15 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
           : (isShellLang(block.lang) ? null : highlightBlock(el, style, lines, block.lang, key))?.slice(0, shown) ?? lines.slice(0, shown).map((line, i) => codeLine(el, style, line, block.lang, `${key}.${i}`))
         const gutter = String(lines.length).length
         const button = copy?.(lines.join('\n'), `copy${b}`) ?? null
-        const float = hover ? floating(button, [button]) : null
+        const label = codeLabel(block)
+        const head = hover && button ? floating([button]) : null
         return (
-          <Box key={key} flexDirection="column" alignSelf="flex-start" minWidth={float?.minWidth}>
+          <Box key={key} flexDirection="column" alignSelf="flex-start" minWidth={head ? Math.min(columns, width(label) + 1 + head.needs) : undefined}>
             {note ? <Text color={t.codeComment}>{note}</Text> : null}
             <Box flexDirection="row" justifyContent="space-between" columnGap={4}>
-              <Text color={t.codeComment}>{`── ${block.lang || 'code'}`}</Text>
-              {float ? float.element : button}
+              <Text color={t.codeComment}>{label}</Text>
+              {head ? head.marker : button}
+              {head?.element}
             </Box>
             <Box flexDirection="column" paddingLeft={2}>
               {!numbered || style.nativeCode ? rows : rows.map((row, i) => row.type === 'Text' ? <Box key={`n${i}`} flexDirection="row"><Text color={t.codeComment} dimColor>{`${String(i + 1).padStart(gutter)}  `}</Text>{row}</Box> : row)}
@@ -825,9 +839,9 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
         )
       }
       case 'list':
-        return renderList(el, style, block, columns, key, copy, fold, tip)
+        return renderList(el, style, block, room(b), key, copy, fold, tip)
       case 'table':
-        return renderTable(el, style, block, columns, key, rtlTables[b]!, tip)
+        return renderTable(el, style, block, room(b), key, rtlTables[b]!, tip)
       case 'notes':
         return (
           <Box key={key} flexDirection="column">
@@ -852,12 +866,16 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
     const rtl = style.reorder && hasRtl(block.raw)
     if (hover) {
       const wide = rtl && (block.kind === 'list' || block.kind === 'quote' || block.kind === 'alert' || rtlTables[b])
-      const start = wide && (rtlTables[b] || flowOf(style, leadInline([block]), columns)?.base === 'R')
-      const float = floating(button, second ? [first, second, html] : [first], opensWithCopy(block), start)!
+      const start = !!wide && (!!rtlTables[b] || flowOf(style, leadInline([block]), columns)?.base === 'R')
+      const float = floating(fitted([first, second, html]), opensWithCopy(block), start)
       return (
-        <Box key={`c${b}`} flexDirection="column" minWidth={float.minWidth} {...(start ? {} : { alignSelf: 'flex-start' as const })}>
-          {element}
-          {float.element}
+        <Box key={`c${b}`} flexDirection="column" {...(start ? { alignItems: 'flex-end' as const } : { alignSelf: 'flex-start' as const })}>
+          <Box flexDirection="row" columnGap={1} minWidth={float.needs} {...(start ? { justifyContent: 'flex-end' as const } : {})}>
+            {start ? float.marker : null}
+            {element}
+            {start ? null : float.marker}
+            {float.element}
+          </Box>
         </Box>
       )
     }
