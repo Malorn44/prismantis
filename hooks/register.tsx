@@ -286,7 +286,7 @@ const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['
   const tip = notes?.press ? noteTip(blocks, text => void $.ui.toast(text)) : undefined
   const button = reply === undefined ? null : copy(reply, 'reply', '⧉ copy reply')
   const hover = style.copyButtonStyle === 'hover'
-  const elements = renderBlocks(el, notes ? { ...style, noteKey: instanceKey(notes.id) } : style, blocks, columns, drawMath(el, style, blocks, drawn), copy, folder($, el, open), tip, { open: true, gap: true, full: true, reply: hover ? button : null })
+  const elements = renderBlocks(el, notes ? { ...style, noteKey: instanceKey(notes.id) } : style, blocks, columns, drawMath(el, style, blocks, drawn), copy, folder($, el, open), tip, { open: true, gap: true, full: true, cells: columns > 20 ? columns + 2 : undefined, reply: hover ? button : null })
   if (!button || hover) return elements
   return [...elements, <el.Box key="reply" alignSelf="flex-end">{button}</el.Box>]
 }
