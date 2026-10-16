@@ -86,7 +86,7 @@ Tool calls draw as one line, dimmed on the right by default. Set \`toolStyle\` i
 
 Each edit draws as a diff card headed \`+N −M\`: code highlighted in the file's language, added and removed lines on a tint of the theme's own green and red with the changed words in a deeper tint, kept readable in every theme, long lines wrapped, the first 20 lines and a \`+K more lines\` button that opens the rest. Files a shell command changes (\`sed -i\`, a script) get the same card, one per file, headed by its path. Set \`diffStyle\` in \`/config\` for the look: \`card\`, \`full\`, \`marks\` or \`bar\`.
 
-A new file is no diff: it shows its first 10 lines as numbered, highlighted code, and \`… +K lines\` opens the rest. A file a shell command removes is one \`Deleted\` line that opens to what it held, and a file moved unchanged is one \`Renamed old → new\` line.
+A new file is no diff: it shows its first 10 lines as numbered code in the theme's colors, and a click anywhere on them opens the rest (\`… +K lines\`) and folds it again. A file a shell command removes is one \`Deleted\` line that opens to what it held, and a file moved unchanged is one \`Renamed old → new\` line.
 
 ### Quotes and rules
 

@@ -1,4 +1,4 @@
-import type { ElementTable, RenderElement, RenderNode } from 'claude-code'
+import type { ElementTable, RenderElement, RenderNode, TextHoverProps } from 'claude-code'
 
 import { tableHtml, tableText } from './html'
 import type { Block, Inline } from './markdown'
@@ -711,7 +711,7 @@ const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind
 
 export type CopyButton = (text: string | (() => string), key: string, label?: string, html?: () => string) => RenderElement | null
 export type Drawn = Map<number, { element?: RenderElement; art?: string; note?: string }>
-export type FoldLook = { label?: string; face?: (folded: boolean) => RenderElement }
+export type FoldLook = { label?: string; face?: (folded: boolean) => RenderElement; hover?: TextHoverProps }
 export type Fold = (id: string, hidden: number, key: string, look?: FoldLook) => { folded: boolean; element: RenderElement; inPlace: boolean } | null
 export type Tip = (note: number) => (() => void) | undefined
 
@@ -1037,10 +1037,10 @@ export const diffTint = (text: string | undefined, color: string | undefined): s
   return tint(base, hue, share)
 }
 
-export const leftToEngine = (output: unknown): boolean => {
+export const leftToEngine = (output: unknown, press: boolean): boolean => {
   if (output === null || typeof output !== 'object') return false
   const out = output as { type?: unknown; staged?: unknown }
-  return out.staged === true || out.type === 'create'
+  return out.staged === true || (out.type === 'create' && !press)
 }
 
 export const diffLines = (output: unknown): DiffLine[] | undefined => {
@@ -1349,7 +1349,14 @@ const editedIntoBeing = (output: unknown, rows: DiffLine[]): WholeFile | undefin
   return fresh && typeof out.filePath === 'string' ? { kind: 'created', path: out.filePath, lines: rows.filter(r => r.mark === '+').map(r => r.text) } : undefined
 }
 
+const written = (output: unknown): WholeFile | undefined => {
+  const out = output as { type?: unknown; filePath?: unknown; content?: unknown }
+  return out.type === 'create' && typeof out.filePath === 'string' && typeof out.content === 'string' ? { kind: 'created', path: out.filePath, lines: lines(out.content) } : undefined
+}
+
 export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, fold: Fold, id: string, columns?: number): RenderElement | undefined => {
+  const write = written(output)
+  if (write) return diffRow(el, style, [wholeFileCard(el, style, write, fold, id, '')], false)
   const rows = diffLines(output)
   if (rows === undefined) return undefined
   const made = editedIntoBeing(output, rows)
@@ -1422,8 +1429,46 @@ const PREVIEW_LINES = 10
 
 const lineCount = (n: number): string => (n === 0 ? 'empty' : `${n} ${n === 1 ? 'line' : 'lines'}`)
 
+const BAND_SHARE = 0.12
+const BAND_FLOOR = 0.06
+
+const previewInks = (theme: Theme): string[] =>
+  [theme.codeText, ...Object.values(PRISM_COLORS).map(k => theme[k])].filter((c): c is string => c !== undefined && HEX.test(c))
+
+export const previewBand = (theme: Theme): string | undefined => {
+  const text = theme.codeText
+  if (!text || !HEX.test(text)) return undefined
+  const base = contrast(text, '#000000') >= contrast(text, '#ffffff') ? '#000000' : '#ffffff'
+  const inks = previewInks(theme)
+  let share = BAND_SHARE
+  while (share > BAND_FLOOR && inks.some(c => contrast(c, tint(base, text, share)!) < TEXT_CONTRAST)) share = Math.round((share - 0.01) * 100) / 100
+  return tint(base, text, share)
+}
+
+const muted = (style: Style, band: string | undefined) => {
+  const color = band && onTint(style.theme.codeComment ?? style.theme.codeText, band)
+  return color ? { hover: { color } } : {}
+}
+
+const previewText = (el: ElementTable, style: Style, path: string, shown: string[], key: string, band: string | undefined): RenderNode[] => {
+  const { Text } = el
+  const ink = style.theme.codeText
+  const lift = (color: string | undefined) => {
+    const lifted = band && color ? onTint(color, band) : undefined
+    return lifted && lifted !== color ? { hover: { color: lifted } } : {}
+  }
+  const gutter = String(shown.length).length
+  return fileSegments(style, path, shown).flatMap((segs, i) => [
+    ...(i ? ['\n'] : []),
+    <Text key={`${key}.g${i}`} dimColor {...muted(style, band)}>{`${String(i + 1).padStart(gutter)}  `}</Text>,
+    <Text key={`${key}.c${i}`} color={ink} {...lift(ink)}>
+      {segs.length ? segs.map((s, j) => (s.color || s.italic ? <Text key={`${key}.c${i}.${j}`} color={s.color} italic={s.italic} {...lift(s.color)}>{s.text}</Text> : s.text)) : ' '}
+    </Text>,
+  ])
+}
+
 const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fold, id: string, key: string): RenderElement => {
-  const { Box, Text, Code } = el
+  const { Box, Text } = el
   const n = file.lines.length
   const created = file.kind === 'created'
   const head = (
@@ -1434,18 +1479,29 @@ const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fo
     </Text>
   )
   const closed = created ? PREVIEW_LINES : 0
-  const toggle = n > closed
-    ? fold(id, n - closed, `fold${key}`, created
-      ? { face: folded => <Text dimColor>{folded ? `… +${n - closed} lines` : 'show less'}</Text> }
-      : { label: `show ${lineCount(n)}`, face: () => head })
-    : null
-  const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : closed)
+  const band = previewBand(style.theme)
+  const whole = style.pressPreview === true
+  const openTo = Math.min(n, DIFF_MAX)
+  const quiet = whole ? muted(style, band) : {}
+  const rest = (shown: number) => (n > shown ? <Text key="rest" dimColor {...quiet}>{`… +${n - shown} lines`}</Text> : null)
+  const look = (): FoldLook => {
+    const hover = { inverse: false, ...(band ? { backgroundColor: band } : {}) }
+    const trail = (folded: boolean) => <Text key="trail" dimColor {...quiet}>{folded ? `… +${n - closed} lines` : 'show less'}</Text>
+    if (!whole) return created ? { face: trail } : { label: `show ${lineCount(n)}`, face: () => head }
+    const rows = (count: number) => previewText(el, style, file.path, file.lines.slice(0, count), 'rows', band)
+    return created
+      ? { hover, face: folded => <Text>{rows(folded ? closed : openTo)}{folded || n > openTo ? ['\n', folded ? trail(true) : rest(openTo)] : null}{folded ? null : ['\n', trail(false)]}</Text> }
+      : { hover, label: `show ${lineCount(n)}`, face: folded => <Text>{head}{folded ? null : ['\n', ...rows(openTo)]}{!folded && n > openTo ? ['\n', rest(openTo)] : null}</Text> }
+  }
+  const toggle = n > closed ? fold(id, n - closed, `fold${key}`, look()) : null
+  const shown = Math.min(n, toggle?.folded === false ? openTo : closed)
+  if (toggle?.inPlace && whole) return <Box key={`file${key}`} flexDirection="column">{created ? head : null}{toggle.element}</Box>
   const header = !created && toggle?.inPlace ? toggle : null
   return (
     <Box key={`file${key}`} flexDirection="column">
       {header ? header.element : head}
-      {shown > 0 ? <Code key="code" source={file.lines.slice(0, shown).join('\n')} path={file.path} startLine={1} /> : null}
-      {n > shown && (toggle ? !toggle.folded : created) ? <Text key="more" dimColor>{`… +${n - shown} lines`}</Text> : null}
+      {shown > 0 ? highlightFile(el, style, file.path, file.lines.slice(0, shown), 'code', 1) : null}
+      {toggle ? (toggle.folded ? null : rest(shown)) : created ? rest(shown) : null}
       {header ? null : toggle?.element ?? null}
     </Box>
   )

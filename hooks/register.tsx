@@ -249,7 +249,7 @@ const folder = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolv
   const folded = !open.includes(id)
   const label = folded ? look?.label ?? `+${hidden} more lines` : 'show less'
   const toggle = () => update($, unfolded, ids => (folded ? [...ids, id].slice(-500) : ids.filter(x => x !== id)))
-  if (faces && look?.face) return { folded, inPlace: true, element: <el.Button key={key} plain label={label} onPress={toggle}>{look.face(folded)}</el.Button> }
+  if (faces && look?.face) return { folded, inPlace: true, element: <el.Button key={key} plain label={label} {...(look.hover ? { hover: look.hover } : {})} onPress={toggle}>{look.face(folded)}</el.Button> }
   return { folded, inPlace: false, element: <el.Button key={key} variant="secondary" label={label} onPress={toggle} /> }
 }
 
@@ -391,10 +391,12 @@ export const register: Register = (on, options) => {
     })
     on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
       if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) {
-        if (leftToEngine(e.props.output)) return next(e)
+        const press = (await linkReach($, probes)).marks
+        if (leftToEngine(e.props.output, press)) return next(e)
         await locate($, style)
         const el = $.ui.resolve(e)
-        return renderDiffCard(el, fit(e.viewport), e.props.output, folder($, el, await read($, unfolded), (await linkReach($, probes)).marks), e.props.tool_use_id, e.viewport?.columns) ?? next(e)
+        const drawn = { ...fit(e.viewport), pressPreview: e.surface === 'terminal' }
+        return renderDiffCard(el, drawn, e.props.output, folder($, el, await read($, unfolded), press), e.props.tool_use_id, e.viewport?.columns) ?? next(e)
       }
       const edits = e.props.tool === 'Bash' && !e.props.isErrored ? bashEdits(e.props.output) : undefined
       if (edits) {
@@ -404,7 +406,8 @@ export const register: Register = (on, options) => {
         const above = !hasShellOutput(output) ? null : quiet ? renderShellResult(el, fit(e.viewport), output) : await next({ ...e, props: { ...e.props, output } })
         firstEdit ??= e.props.tool_use_id
         const notes = editNotes(edits, firstEdit === e.props.tool_use_id, shellCommands.get(e.props.tool_use_id))
-        const cards = renderBashEdits(el, fit(e.viewport), edits, folder($, el, await read($, unfolded), (await linkReach($, probes)).marks), e.props.tool_use_id, above !== null, notes, e.viewport?.columns)
+        const drawn = { ...fit(e.viewport), pressPreview: e.surface === 'terminal' }
+        const cards = renderBashEdits(el, drawn, edits, folder($, el, await read($, unfolded), (await linkReach($, probes)).marks), e.props.tool_use_id, above !== null, notes, e.viewport?.columns)
         return above === null ? cards : <el.Box flexDirection="column">{above}{cards}</el.Box>
       }
       if (!quiet) return next(e)

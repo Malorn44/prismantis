@@ -26,6 +26,7 @@ export type Style = {
   narration?: boolean
   inside?: 'quote' | 'alert'
   noteKey?: string
+  pressPreview?: boolean
   diffStyle: 'card' | 'full' | 'marks' | 'bar'
   highlightNumbers: boolean
   highlightPaths: boolean
