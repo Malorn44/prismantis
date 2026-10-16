@@ -289,15 +289,13 @@ const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['
   const button = reply === undefined ? null : copy(reply, 'reply', '⧉ copy reply')
   if (!button) return elements
   if (!hover) return [...elements, <el.Box key="reply" alignSelf="flex-end">{button}</el.Box>]
-  const anchor = (top: number) => (
-    <el.Box key="reply" position="absolute" top={top} left={-2}>
+  return [
+    ...elements,
+    <el.Box key="reply" position="absolute" bottom={0} right={-MARK}>
       <el.Text dimColor>⧉</el.Text>
-      <el.Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>{button}</el.Box>
-    </el.Box>
-  )
-  return elements.length > 1
-    ? [...elements.slice(0, -1), <el.Box flexDirection="column">{anchor(-1)}{elements.at(-1)}</el.Box>]
-    : [...elements, <el.Box height={1}>{anchor(0)}</el.Box>]
+      <el.Box position="absolute" top={0} right={0} display="none" hover={{ display: 'flex' }}>{button}</el.Box>
+    </el.Box>,
+  ]
 }
 
 const THEME_ARGS = [...PRESET_NAMES, 'random']
@@ -523,14 +521,17 @@ export const register: Register = (on, options) => {
     const reach = await linkReach($, probes)
     const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     const open = await read($, unfolded)
+    const reply = blocks.length > 1 || hasRtl(e.props.text) ? e.props.text : undefined
+    const corner = reply !== undefined && surfaceStyle.copyButtons && surfaceStyle.copyButtonStyle === 'hover'
     return (
       <Box key="msg" flexDirection="row">
         <Box width={2} flexShrink={0}>
           <Text color={style.theme.accent}>{e.props.isFirstOfReply ? '●' : ' '}</Text>
         </Box>
         <Box flexDirection="column" rowGap={1} flexGrow={1}>
-          {drawMarkdown($, el, narration ? { ...surfaceStyle, narration } : surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, blocks.length > 1 || hasRtl(e.props.text) ? e.props.text : undefined, open, { id: e.requestId, press: reach.marks })}
+          {drawMarkdown($, el, narration ? { ...surfaceStyle, narration } : surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, reply, open, { id: e.requestId, press: reach.marks })}
         </Box>
+        {corner ? <Box width={MARK} flexShrink={0} /> : null}
       </Box>
     )
   })

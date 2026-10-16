@@ -298,6 +298,19 @@ test('copyButtonStyle hover gives every block with copy buttons one dim ⧉ in t
   await ui.unmount()
 })
 
+test('copyButtonStyle hover puts the reply\'s ⧉ in its bottom-right corner, in a gutter of its own, with copy reply drawn over it', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  for (const text of [COPY_SAMPLE, 'שלום עולם']) {
+    const ui = await $.ui.mount({ ...draw(text), surface: 'terminal' })
+    const anchor = await ui.find({ key: 'reply' })
+    expect({ position: anchor?.props.position, bottom: anchor?.props.bottom, right: anchor?.props.right, text: anchor?.text }).toEqual({ position: 'absolute', bottom: 0, right: -2, text: '⧉⧉ copy reply' })
+    const reveal = (anchor?.children ?? []).find((child): child is DrawnNode => !!child && typeof child === 'object' && (child as DrawnNode).props?.display === 'none')
+    expect({ top: reveal?.props?.top, right: reveal?.props?.right }).toEqual({ top: 0, right: 0 })
+    const row = drawnKids((await ui.drawn()) as DrawnNode)
+    expect({ width: row.at(-1)?.props?.width, children: row.at(-1)?.children ?? [] }).toEqual({ width: 2, children: [] })
+    await ui.unmount()
+  }
+})
+
 test('copyButtonStyle hover shows nothing while the pointer is on a block, only on its marker', { options: { copyButtonStyle: 'hover' } }, async $ => {
   const ui = await $.ui.mount({ ...draw(`${COPY_SAMPLE}\n\n- item\n  \`\`\`\n  v\n  \`\`\``), surface: 'terminal' })
   const tree = (await ui.drawn()) as DrawnNode
