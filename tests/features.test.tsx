@@ -1607,6 +1607,25 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 
+  test(`removed lines stay plain in a clickable long diff and in a deleted file's opened lines, as in diff cards, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    claudeAt(on, '2.1.295')
+    const lines = Array.from({ length: 12 }, (_, i) => [`-export const a${i} = ${i}`, `+let b${i} = ${i}`]).flat()
+    const keywords = async (ui: { findAll: (q: { type: string; text: RegExp }) => Promise<unknown[]> }, word: RegExp) => (await ui.findAll({ type: 'Text', text: word })).length
+    const long = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/long.ts', structuredPatch: [{ oldStart: 1, newStart: 1, lines }] }))
+    if (await refusedTextButtons(long)) return
+    expect(await keywords(long, /^let$/)).toBeGreaterThan(0)
+    expect(await keywords(long, /^export$/)).toBe(0)
+    await long.unmount()
+    const gone = await $.ui.mount(editResult(surface, 'Bash', shellFiles(removedFile('old.ts', ['export const x = 1', 'let y = 2']))))
+    if (await refusedTextButtons(gone)) return
+    await gone.press({ key: 'fold0' })
+    expect(await rowsOf(gone)).toEqual(['1 - export const x = 1', '2 - let y = 2'])
+    expect(await keywords(gone, /^(export|let)$/)).toBe(0)
+    await gone.unmount()
+  })
+
   test(`a long diff keeps the ... row between its hunks, untinted, when it opens on a click anywhere from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     claudeAt(on, '2.1.295')
