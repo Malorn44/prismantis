@@ -1040,7 +1040,7 @@ export const renderShellResult = (el: ElementTable, style: Style, output: unknow
 const DIFF_LINES = 20
 const DIFF_MAX = 400
 
-type DiffLine = { mark: '+' | '-' | ' '; num: number; text: string; hunk: number }
+type DiffLine = { mark: '+' | '-' | ' ' | '\\'; num: number; text: string; hunk: number }
 
 const HEX = /^#[0-9a-f]{6}$/i
 
@@ -1096,7 +1096,11 @@ export const diffLines = (output: unknown): DiffLine[] | undefined => {
     if (typeof hunk?.oldStart !== 'number' || typeof hunk.newStart !== 'number' || !Array.isArray(hunk.lines)) return undefined
     let [o, n] = [hunk.oldStart, hunk.newStart]
     for (const l of hunk.lines) {
-      if (typeof l !== 'string' || l.startsWith('\\')) continue
+      if (typeof l !== 'string') continue
+      if (l.startsWith('\\')) {
+        rows.push({ mark: '\\', num: 0, text: l.slice(1), hunk: h })
+        continue
+      }
       const mark = l[0] === '+' || l[0] === '-' ? l[0] : ' '
       let num: number
       if (mark === '-') num = o++
@@ -1151,14 +1155,14 @@ const fileSegments = (style: Style, path: string | undefined, lines: string[]): 
 }
 
 const diffSegments = (style: Style, rows: DiffLine[], path: string | undefined): Segment[][] => {
-  const out: Segment[][] = rows.map(() => [])
+  const out: Segment[][] = rows.map(r => (r.mark === '\\' && r.text ? [{ text: r.text, italic: false }] : []))
   let start = 0
   while (start < rows.length) {
     let end = start
     while (end < rows.length && rows[end]!.hunk === rows[start]!.hunk) end++
     const at = Array.from({ length: end - start }, (_, i) => start + i)
-    const before = at.filter(r => rows[r]!.mark !== '+')
-    const after = at.filter(r => rows[r]!.mark !== '-')
+    const before = at.filter(r => rows[r]!.mark === ' ' || rows[r]!.mark === '-')
+    const after = at.filter(r => rows[r]!.mark === ' ' || rows[r]!.mark === '+')
     const old = fileSegments(style, path, before.map(r => rows[r]!.text))
     const now = fileSegments(style, path, after.map(r => rows[r]!.text))
     before.forEach((r, i) => (out[r] = old[i]!))
@@ -1210,6 +1214,13 @@ const wordDiff = (a: string[], b: string[]): [boolean[], boolean[]] | null => {
   })
 }
 
+const runOf = (rows: DiffLine[], from: number, mark: '+' | '-', hunk: number): [number[], number] => {
+  const at: number[] = []
+  let end = from
+  for (; end < rows.length && rows[end]!.hunk === hunk && (rows[end]!.mark === mark || rows[end]!.mark === '\\'); end++) if (rows[end]!.mark === mark) at.push(end)
+  return [at, end]
+}
+
 const wordFlags = (rows: DiffLine[], segments: Segment[][]): (boolean[] | null)[] => {
   const flags: (boolean[] | null)[] = rows.map(() => null)
   for (let i = 0; i < rows.length; ) {
@@ -1217,14 +1228,11 @@ const wordFlags = (rows: DiffLine[], segments: Segment[][]): (boolean[] | null)[
       i++
       continue
     }
-    const hunk = rows[i]!.hunk
-    let mid = i
-    while (mid < rows.length && rows[mid]!.mark === '-' && rows[mid]!.hunk === hunk) mid++
-    let end = mid
-    while (end < rows.length && rows[end]!.mark === '+' && rows[end]!.hunk === hunk) end++
-    for (let k = 0; k < Math.min(mid - i, end - mid); k++) {
-      const diff = wordDiff(unitsOf(segments[i + k]!), unitsOf(segments[mid + k]!))
-      if (diff) [flags[i + k], flags[mid + k]] = diff
+    const [removed, mid] = runOf(rows, i, '-', rows[i]!.hunk)
+    const [added, end] = runOf(rows, mid, '+', rows[i]!.hunk)
+    for (let k = 0; k < Math.min(removed.length, added.length); k++) {
+      const diff = wordDiff(unitsOf(segments[removed[k]!]!), unitsOf(segments[added[k]!]!))
+      if (diff) [flags[removed[k]!], flags[added[k]!]] = diff
     }
     i = Math.max(end, i + 1)
   }
@@ -1343,9 +1351,9 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
   const color = (mark: DiffLine['mark']) => (mark === '+' ? addColor : mark === '-' ? removeColor : undefined)
   const look = style.diffStyle
   const tinted = look === 'card' || look === 'full'
-  const rowTints = { '+': diffTint(t.codeText, addColor), '-': diffTint(t.codeText, removeColor), ' ': undefined }
-  const tints = tinted ? rowTints : { '+': undefined, '-': undefined, ' ': undefined }
-  const words = tinted ? { '+': wordTint(t.codeText, addColor), '-': wordTint(t.codeText, removeColor), ' ': undefined } : rowTints
+  const rowTints = { '+': diffTint(t.codeText, addColor), '-': diffTint(t.codeText, removeColor), ' ': undefined, '\\': undefined }
+  const tints = tinted ? rowTints : { '+': undefined, '-': undefined, ' ': undefined, '\\': undefined }
+  const words = tinted ? { '+': wordTint(t.codeText, addColor), '-': wordTint(t.codeText, removeColor), ' ': undefined, '\\': undefined } : rowTints
   const frame = look === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
   const segments = diffSegments(style, shown, path)
   const flags = wordFlags(shown, segments)
@@ -1362,9 +1370,9 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
         const bg = tints[r.mark]
         return visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => (
           <Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
-            {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' ? '  ' : '▌ '}</Text> : null}
-            <Text dimColor>{`${k ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `}</Text>
-            <Text color={color(r.mark)} dimColor={r.mark === ' '}>{`${r.mark} `}</Text>
+            {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' || r.mark === '\\' ? '  ' : '▌ '}</Text> : null}
+            <Text dimColor>{`${k || r.mark === '\\' ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `}</Text>
+            <Text color={color(r.mark)} dimColor={r.mark === ' '}>{r.mark === '\\' ? '  ' : `${r.mark} `}</Text>
             <Text color={t.codeText}>{drawCode(el, style, part, bg, words[r.mark], `d${i}.${k}`)}</Text>
           </Box>
         ))
