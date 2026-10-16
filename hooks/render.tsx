@@ -988,8 +988,48 @@ export const renderShellResult = (el: ElementTable, style: Style, output: unknow
   )
 }
 
-const DIFF_LINES = 20
+export const shellBrief = (output: unknown): unknown => {
+  if (output === null || typeof output !== 'object') return output
+  const out = output as Record<string, unknown>
+  const stdout = lines(out.stdout).slice(0, RESULT_LINES)
+  const stderr = lines(out.stderr).slice(0, RESULT_LINES - stdout.length)
+  return { ...out, stdout: stdout.join('\n'), stderr: stderr.join('\n') }
+}
+
 const DIFF_MAX = 400
+
+const TREE_NODES = 19000
+const TREE_TEXT = 95000
+const TEXT_CHILD = 10000
+const ROW_NODES = 7
+
+export const fitsTree = (tree: unknown): boolean => {
+  const stack = [tree]
+  let [nodes, text] = [0, 0]
+  while (stack.length) {
+    const node = stack.pop()
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push(child)
+      continue
+    }
+    if (typeof node === 'string') {
+      if (node.length > TEXT_CHILD) return false
+      text += node.length
+    } else if (node === null || typeof node !== 'object') continue
+    else {
+      const children = (node as { children?: unknown }).children
+      if (Array.isArray(children)) for (const child of children) stack.push(child)
+    }
+    if (++nodes > TREE_NODES || text > TREE_TEXT) return false
+  }
+  return true
+}
+
+const mayFit = (diffs: DiffLine[][]): boolean => {
+  let [rows, text] = [0, 0]
+  for (const diff of diffs) for (const r of diff) [rows, text] = [rows + 1, text + r.text.length]
+  return rows * ROW_NODES <= TREE_NODES && text <= TREE_TEXT
+}
 
 type DiffLine = { mark: '+' | '-' | ' ' | '\\'; num: number; text: string; hunk: number }
 
@@ -1357,29 +1397,22 @@ const diffText = (el: ElementTable, style: Style, shown: DiffLine[], path: strin
   )
 }
 
-const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
+const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
   const { Box, Text } = el
   const t = style.theme
   const added = rows.filter(r => r.mark === '+').length
   const removed = rows.filter(r => r.mark === '-').length
-  const toggle = rows.length > DIFF_LINES ? fold?.(id, rows.length - DIFF_LINES, `fold${key}`) : null
-  const shown = rows.slice(0, toggle?.folded === false ? DIFF_MAX : DIFF_LINES)
   const [addColor, removeColor] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
   const frame = style.diffStyle === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
-  const head = (
-    <Text key="head">
-      {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
-      <Text color={addColor} dimColor={added === 0}>{`+${added}`}</Text>
-      <Text> </Text>
-      <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
-    </Text>
-  )
-  const press = style.pressPreview === true ? toggle?.around : undefined
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
-      {press ? press(<Text key="all">{head}{'\n'}{diffText(el, style, shown, path, columns)}</Text>, { inverse: false }) : [head, ...diffRows(el, style, shown, path, columns)]}
-      {rows.length > shown.length && toggle?.folded !== true ? <Text dimColor>{`… +${rows.length - shown.length} lines`}</Text> : null}
-      {toggle?.element ?? null}
+      <Text key="head">
+        {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
+        <Text color={addColor} dimColor={added === 0}>{`+${added}`}</Text>
+        <Text> </Text>
+        <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
+      </Text>
+      {diffRows(el, style, rows, path, columns)}
     </Box>
   )
 }
@@ -1408,8 +1441,9 @@ export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, 
   const rows = diffLines(output)
   if (rows === undefined) return undefined
   const made = editedIntoBeing(output, rows)
+  if (!made && !mayFit([rows])) return undefined
   const path = (output as { filePath?: unknown }).filePath
-  return diffRow(el, style, [made ? wholeFileCard(el, style, made, fold, id, '', columns) : diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined, columns)], false)
+  return diffRow(el, style, [made ? wholeFileCard(el, style, made, fold, id, '', columns) : diffBox(el, style, rows, '', typeof path === 'string' ? path : undefined, columns)], false)
 }
 
 type WholeFile = { kind: 'created' | 'deleted'; path: string; lines: string[] }
@@ -1566,9 +1600,10 @@ const renamedLine = (el: ElementTable, style: Style, from: string, to: string, k
   </el.Text>
 )
 
-export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = [], columns?: number): RenderElement => {
+export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = [], columns?: number): RenderElement | undefined => {
+  if (!mayFit(edits.files.flatMap(file => (file.kind === 'modified' ? [file.rows] : [])))) return undefined
   const cards = edits.files.map((file, i) =>
-    file.kind === 'modified' ? diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), file.path, columns, shortPath(style, file.path))
+    file.kind === 'modified' ? diffBox(el, style, file.rows, String(i), file.path, columns, shortPath(style, file.path))
     : file.kind === 'renamed' ? renamedLine(el, style, file.path, file.to, String(i))
     : wholeFileCard(el, style, file, fold, `${id}:${i}`, String(i), columns))
   const more = edits.more ? [<el.Text key="more" dimColor>{`… +${edits.more} more ${edits.more === 1 ? 'file' : 'files'}`}</el.Text>] : []

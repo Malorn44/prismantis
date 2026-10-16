@@ -11,7 +11,7 @@ import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
 import type { Fold } from './render'
-import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import { bashEdits, drawMath, editNotes, fitsTree, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, shellBrief, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import { HINT, SETUP_DONE, findSetup, helpText, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
 import type { Style } from './theme'
@@ -397,18 +397,22 @@ export const register: Register = (on, options) => {
         await locate($, style)
         const el = $.ui.resolve(e)
         const drawn = { ...fit(e.viewport), pressPreview: e.surface === 'terminal' }
-        return renderDiffCard(el, drawn, e.props.output, folder($, el, await read($, unfolded), press), e.props.tool_use_id, e.viewport?.columns) ?? next(e)
+        const card = renderDiffCard(el, drawn, e.props.output, folder($, el, await read($, unfolded), press), e.props.tool_use_id, e.viewport?.columns)
+        return card && fitsTree(card) ? card : next(e)
       }
       const edits = e.props.tool === 'Bash' && !e.props.isErrored ? bashEdits(e.props.output) : undefined
       if (edits) {
         await locate($, style)
         const el = $.ui.resolve(e)
         const output = withoutBashEdits(e.props.output)
-        const above = !hasShellOutput(output) ? null : quiet ? renderShellResult(el, fit(e.viewport), output) : await next({ ...e, props: { ...e.props, output } })
-        firstEdit ??= e.props.tool_use_id
-        const notes = editNotes(edits, firstEdit === e.props.tool_use_id, shellCommands.get(e.props.tool_use_id))
+        const shown = hasShellOutput(output)
+        const brief = shown && quiet ? renderShellResult(el, fit(e.viewport), output) : null
+        const notes = editNotes(edits, (firstEdit ?? e.props.tool_use_id) === e.props.tool_use_id, shellCommands.get(e.props.tool_use_id))
         const drawn = { ...fit(e.viewport), pressPreview: e.surface === 'terminal' }
-        const cards = renderBashEdits(el, drawn, edits, folder($, el, await read($, unfolded), (await linkReach($, probes)).marks), e.props.tool_use_id, above !== null, notes, e.viewport?.columns)
+        const cards = renderBashEdits(el, drawn, edits, folder($, el, await read($, unfolded), (await linkReach($, probes)).marks), e.props.tool_use_id, shown, notes, e.viewport?.columns)
+        if (!cards || !fitsTree([brief, cards])) return next(quiet ? { ...e, props: { ...e.props, output: shellBrief(e.props.output) } } : e)
+        firstEdit ??= e.props.tool_use_id
+        const above = shown ? brief ?? (await next({ ...e, props: { ...e.props, output } })) : null
         return above === null ? cards : <el.Box flexDirection="column">{above}{cards}</el.Box>
       }
       if (!quiet) return next(e)
