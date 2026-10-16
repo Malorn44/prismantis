@@ -711,8 +711,8 @@ const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind
 
 export type CopyButton = (text: string | (() => string), key: string, label?: string, html?: () => string) => RenderElement | null
 export type Drawn = Map<number, { element?: RenderElement; art?: string; note?: string }>
-export type FoldLook = { label?: string; face?: (folded: boolean) => RenderElement; hover?: TextHoverProps }
-export type Fold = (id: string, hidden: number, key: string, look?: FoldLook) => { folded: boolean; element: RenderElement; inPlace: boolean } | null
+export type FoldLook = { label?: string; face?: (folded: boolean) => RenderElement }
+export type Fold = (id: string, hidden: number, key: string, look?: FoldLook) => { folded: boolean; element: RenderElement; faced: boolean; around?: (rows: RenderElement, hover: TextHoverProps) => RenderElement } | null
 export type Tip = (note: number) => (() => void) | undefined
 
 export const instanceKey = (id: string): string => {
@@ -1291,13 +1291,9 @@ export const highlightFile = (el: ElementTable, style: Style, path: string | und
   )
 }
 
-const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
+const diffRows = (el: ElementTable, style: Style, shown: DiffLine[], path: string | undefined, columns: number | undefined): RenderElement[] => {
   const { Box, Text } = el
   const t = style.theme
-  const added = rows.filter(r => r.mark === '+').length
-  const removed = rows.filter(r => r.mark === '-').length
-  const toggle = rows.length > DIFF_LINES ? fold?.(id, rows.length - DIFF_LINES, `fold${key}`) : null
-  const shown = rows.slice(0, toggle?.folded === false ? DIFF_MAX : DIFF_LINES)
   const gutter = String(Math.max(0, ...shown.map(r => r.num))).length
   const [addColor, removeColor] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
   const color = (mark: DiffLine['mark']) => (mark === '+' ? addColor : mark === '-' ? removeColor : undefined)
@@ -1306,10 +1302,32 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
   const rowTints = { '+': diffTint(t.codeText, addColor), '-': diffTint(t.codeText, removeColor), ' ': undefined, '\\': undefined }
   const tints = tinted ? rowTints : { '+': undefined, '-': undefined, ' ': undefined, '\\': undefined }
   const words = tinted ? { '+': wordTint(t.codeText, addColor), '-': wordTint(t.codeText, removeColor), ' ': undefined, '\\': undefined } : rowTints
-  const frame = look === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
   const segments = diffSegments(style, shown, path)
   const flags = wordFlags(shown, segments)
   const room = columns === undefined ? undefined : columns - 5 - (look === 'card' ? 4 : 0) - (look === 'bar' ? 2 : 0) - gutter - 3
+  return shown.flatMap((r, i) => {
+    const bg = tints[r.mark]
+    const gap = i > 0 && r.hunk !== shown[i - 1]!.hunk ? [<Text key={`gap${i}`} dimColor>{look === 'bar' ? '  ...' : '...'}</Text>] : []
+    return [...gap, ...visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => (
+      <Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
+        {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' || r.mark === '\\' ? '  ' : '▌ '}</Text> : null}
+        <Text dimColor>{`${k || r.mark === '\\' ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `}</Text>
+        <Text color={color(r.mark)} dimColor={r.mark === ' '}>{r.mark === '\\' ? '  ' : `${r.mark} `}</Text>
+        <Text color={t.codeText}>{drawCode(el, style, part, bg, words[r.mark], `d${i}.${k}`)}</Text>
+      </Box>
+    ))]
+  })
+}
+
+const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
+  const { Box, Text } = el
+  const t = style.theme
+  const added = rows.filter(r => r.mark === '+').length
+  const removed = rows.filter(r => r.mark === '-').length
+  const toggle = rows.length > DIFF_LINES ? fold?.(id, rows.length - DIFF_LINES, `fold${key}`) : null
+  const shown = rows.slice(0, toggle?.folded === false ? DIFF_MAX : DIFF_LINES)
+  const [addColor, removeColor] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
+  const frame = style.diffStyle === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
       <Text>
@@ -1318,18 +1336,7 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
         <Text> </Text>
         <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
       </Text>
-      {shown.flatMap((r, i) => {
-        const bg = tints[r.mark]
-        const gap = i > 0 && r.hunk !== shown[i - 1]!.hunk ? [<Text key={`gap${i}`} dimColor>{look === 'bar' ? '  ...' : '...'}</Text>] : []
-        return [...gap, ...visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => (
-          <Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
-            {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' || r.mark === '\\' ? '  ' : '▌ '}</Text> : null}
-            <Text dimColor>{`${k || r.mark === '\\' ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `}</Text>
-            <Text color={color(r.mark)} dimColor={r.mark === ' '}>{r.mark === '\\' ? '  ' : `${r.mark} `}</Text>
-            <Text color={t.codeText}>{drawCode(el, style, part, bg, words[r.mark], `d${i}.${k}`)}</Text>
-          </Box>
-        ))]
-      })}
+      {diffRows(el, style, shown, path, columns)}
       {rows.length > shown.length && toggle?.folded !== true ? <Text dimColor>{`… +${rows.length - shown.length} lines`}</Text> : null}
       {toggle?.element ?? null}
     </Box>
@@ -1356,12 +1363,12 @@ const written = (output: unknown): WholeFile | undefined => {
 
 export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, fold: Fold, id: string, columns?: number): RenderElement | undefined => {
   const write = written(output)
-  if (write) return diffRow(el, style, [wholeFileCard(el, style, write, fold, id, '')], false)
+  if (write) return diffRow(el, style, [wholeFileCard(el, style, write, fold, id, '', columns, false)], false)
   const rows = diffLines(output)
   if (rows === undefined) return undefined
   const made = editedIntoBeing(output, rows)
   const path = (output as { filePath?: unknown }).filePath
-  return diffRow(el, style, [made ? wholeFileCard(el, style, made, fold, id, '') : diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined, columns)], false)
+  return diffRow(el, style, [made ? wholeFileCard(el, style, made, fold, id, '', columns) : diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined, columns)], false)
 }
 
 type WholeFile = { kind: 'created' | 'deleted'; path: string; lines: string[] }
@@ -1467,7 +1474,7 @@ const previewText = (el: ElementTable, style: Style, path: string, shown: string
   ])
 }
 
-const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fold, id: string, key: string): RenderElement => {
+const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fold, id: string, key: string, columns: number | undefined, marked = true): RenderElement => {
   const { Box, Text } = el
   const n = file.lines.length
   const created = file.kind === 'created'
@@ -1479,30 +1486,25 @@ const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fo
     </Text>
   )
   const closed = created ? PREVIEW_LINES : 0
-  const band = previewBand(style.theme)
-  const whole = style.pressPreview === true
-  const openTo = Math.min(n, DIFF_MAX)
-  const quiet = whole ? muted(style, band) : {}
-  const rest = (shown: number) => (n > shown ? <Text key="rest" dimColor {...quiet}>{`… +${n - shown} lines`}</Text> : null)
-  const look = (): FoldLook => {
-    const hover = { inverse: false, ...(band ? { backgroundColor: band } : {}) }
-    const trail = (folded: boolean) => <Text key="trail" dimColor {...quiet}>{folded ? `… +${n - closed} lines` : 'show less'}</Text>
-    if (!whole) return created ? { face: trail } : { label: `show ${lineCount(n)}`, face: () => head }
-    const rows = (count: number) => previewText(el, style, file.path, file.lines.slice(0, count), 'rows', band)
-    return created
-      ? { hover, face: folded => <Text>{rows(folded ? closed : openTo)}{folded || n > openTo ? ['\n', folded ? trail(true) : rest(openTo)] : null}{folded ? null : ['\n', trail(false)]}</Text> }
-      : { hover, label: `show ${lineCount(n)}`, face: folded => <Text>{head}{folded ? null : ['\n', ...rows(openTo)]}{!folded && n > openTo ? ['\n', rest(openTo)] : null}</Text> }
-  }
-  const toggle = n > closed ? fold(id, n - closed, `fold${key}`, look()) : null
-  const shown = Math.min(n, toggle?.folded === false ? openTo : closed)
-  if (toggle?.inPlace && whole) return <Box key={`file${key}`} flexDirection="column">{created ? head : null}{toggle.element}</Box>
-  const header = !created && toggle?.inPlace ? toggle : null
+  const toggle = n > closed
+    ? fold(id, n - closed, `fold${key}`, created
+      ? { face: folded => <Text dimColor>{folded ? `… +${n - closed} lines` : 'show less'}</Text> }
+      : { label: `show ${lineCount(n)}`, face: () => head })
+    : null
+  const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : closed)
+  const lines = file.lines.slice(0, shown)
+  const press = !marked && style.pressPreview === true ? toggle?.around : undefined
+  const band = press ? previewBand(style.theme) : undefined
+  const rows = shown === 0 ? null
+    : marked ? <Box key="rows" flexDirection="column">{diffRows(el, style, lines.map((text, i) => ({ mark: created ? '+' : '-', num: i + 1, text, hunk: 0 })), file.path, columns)}</Box>
+    : <Text key="rows">{previewText(el, style, file.path, lines, 'rows', band)}</Text>
+  const inHead = !created && toggle?.faced === true
   return (
     <Box key={`file${key}`} flexDirection="column">
-      {header ? header.element : head}
-      {shown > 0 ? highlightFile(el, style, file.path, file.lines.slice(0, shown), 'code', 1) : null}
-      {toggle ? (toggle.folded ? null : rest(shown)) : created ? rest(shown) : null}
-      {header ? null : toggle?.element ?? null}
+      {inHead ? toggle!.element : head}
+      {rows && press ? press(rows, { inverse: false, ...(band ? { backgroundColor: band } : {}) }) : rows}
+      {n > shown && (toggle ? !toggle.folded : created) ? <Text key="rest" dimColor>{`… +${n - shown} lines`}</Text> : null}
+      {toggle && !inHead ? toggle.element : null}
     </Box>
   )
 }
@@ -1520,7 +1522,7 @@ export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits
   const cards = edits.files.map((file, i) =>
     file.kind === 'modified' ? diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), file.path, columns, shortPath(style, file.path))
     : file.kind === 'renamed' ? renamedLine(el, style, file.path, file.to, String(i))
-    : wholeFileCard(el, style, file, fold, `${id}:${i}`, String(i)))
+    : wholeFileCard(el, style, file, fold, `${id}:${i}`, String(i), columns))
   const more = edits.more ? [<el.Text key="more" dimColor>{`… +${edits.more} more ${edits.more === 1 ? 'file' : 'files'}`}</el.Text>] : []
   const said = notes.map((note, i) => <el.Text key={`note${i}`} dimColor>{`(${note})`}</el.Text>)
   return diffRow(el, style, [...cards, ...more, ...said], below)

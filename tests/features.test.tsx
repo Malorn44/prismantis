@@ -1288,7 +1288,7 @@ for (const toolOutput of ['full', 'quiet'] as const) {
       const row = (text: RegExp) => ui.find({ type: 'Box', text })
       expect((await row(/^6 \+ const c = 4$/))?.props.backgroundColor).toBe(diffTint(t.codeText, t.number))
       expect((await row(/^5 - const b = 2$/))?.props.backgroundColor).toBe(diffTint(t.codeText, t.codeFlag))
-      expect(await row(/^2 \+ two$/)).toBeUndefined()
+      expect((await row(/^2 \+ two$/))?.props.backgroundColor).toBe(diffTint(t.codeText, t.number))
       expect(await ui.find({ type: 'Text', text: /^Created NOTES\.md \(2 lines\)$/ })).toBeDefined()
       expect((await ui.find({ type: 'Text', text: /^NOTES\.md$/ }))?.props.color).toBe(t.path)
       expect((await ui.find({ type: 'Text', text: /^const c = 4$/ }))?.props.color).toBe(t.codeText)
@@ -1395,12 +1395,16 @@ const nodesOf = (node: unknown, out: DrawnNode[] = []): DrawnNode[] => {
   return out
 }
 const hoverOf = (node: DrawnNode) => (node.hover ?? node.props?.hover) as { color?: string; backgroundColor?: string; inverse?: boolean } | undefined
-const pressOf = async (ui: { drawn: () => Promise<unknown> }) => nodesOf(await ui.drawn()).find(n => n.type === 'Button')
-const rowsOf = async (ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text: string }[]> }) =>
-  (await ui.findAll({ type: 'Box' })).filter(b => /^l\d+$/.test(b.key ?? '')).map(b => b.text)
+const pressOf = async (ui: { drawn: () => Promise<unknown> }) => nodesOf(await ui.drawn()).find(n => n.type === 'Button' && n.props?.plain === true)
+const rowsOf = async (ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text: string }[]> }) => {
+  const blocks = (await ui.findAll({ type: 'Text' })).map(r => r.text.split('\n')).filter(lines => lines.every(l => /^ *\d+ {2}/.test(l)))
+  const written = blocks.reduce<string[]>((a, b) => (b.length > a.length ? b : a), [])
+  return [...written, ...(await ui.findAll({ type: 'Box' })).filter(b => /^d\d+$/.test(b.key ?? '')).map(b => b.text)]
+}
+const numberedRows = (lines: string[], mark?: '+' | '-') => lines.map((l, i) => `${String(i + 1).padStart(String(lines.length).length)}${mark ? ` ${mark} ` : '  '}${l}`)
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`from Claude Code 2.1.295 prismantis draws a file Write creates in theme colors, the first 10 lines numbered, on ${surface}`, async ($, on) => {
+  test(`from Claude Code 2.1.295 prismantis draws a file Write creates in theme colors with no diff marks, the first 10 lines numbered, on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
     claudeAt(on, '2.1.295')
@@ -1408,22 +1412,21 @@ for (const surface of ['terminal', 'desktop'] as const) {
     if (await refusedTextButtons(ui)) return
     expect(await ui.find({ type: 'Text', text: /^Created new\.ts \(25 lines\)$/ })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: /^export$/ }))?.props.color).toBe(t.codeFlag)
-    expect(await ui.find({ type: 'Text', text: /^\+ $/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^[+-] $/ })).toBeUndefined()
     expect(await ui.find({ type: 'Code' })).toBeUndefined()
+    expect(await rowsOf(ui)).toEqual(numberedRows(ts(10)))
     const fold = await ui.find({ key: 'fold' })
-    expect(fold?.type).toBe('Button')
+    expect([fold?.type, fold?.props.plain, fold?.text, fold?.props.label]).toEqual(['Button', true, '… +15 lines', '+15 more lines'])
+    expect((await ui.find({ key: 'fold.rows' }))?.type).toBe(surface === 'terminal' ? 'Button' : undefined)
+    await ui.press({ key: 'fold' })
+    expect(await rowsOf(ui)).toEqual(numberedRows(ts(25)))
+    expect((await ui.find({ key: 'fold' }))?.text).toBe('show less')
+    await ui.press({ key: surface === 'terminal' ? 'fold.rows' : 'fold' })
+    expect(await rowsOf(ui)).toEqual(numberedRows(ts(10)))
     if (surface === 'terminal') {
-      expect(fold?.text.split('\n')).toEqual([...ts(10).map((l, i) => `${String(i + 1).padStart(2)}  ${l}`), '… +15 lines'])
-      expect(await rowsOf(ui)).toEqual([])
-    } else {
-      expect(fold?.text).toBe('… +15 lines')
-      expect(await rowsOf(ui)).toEqual(ts(10).map((l, i) => `${String(i + 1).padStart(2)}  ${l}`))
+      await ui.press({ key: 'fold.rows' })
+      expect((await rowsOf(ui)).length).toBe(25)
     }
-    await ui.press({ key: 'fold' })
-    const open = surface === 'terminal' ? (await ui.find({ key: 'fold' }))!.text.split('\n') : [...(await rowsOf(ui)), (await ui.find({ key: 'fold' }))!.text]
-    expect(open).toEqual([...ts(25).map((l, i) => `${String(i + 1).padStart(2)}  ${l}`), 'show less'])
-    await ui.press({ key: 'fold' })
-    expect((await ui.find({ key: 'fold' }))?.text.split('\n').at(-1)).toBe('… +15 lines')
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
     await ui.unmount()
   })
@@ -1437,10 +1440,11 @@ test('an opened 450-line new file shows 400 lines, counts the rest and stays wel
     const ui = await $.ui.mount(editResult(surface, 'Write', writeNew('/tmp/big.ts', body)))
     if (await refusedTextButtons(ui)) return
     await ui.press({ key: 'fold' })
-    const text = surface === 'terminal' ? (await ui.find({ key: 'fold' }))!.text : (await rowsOf(ui)).join('\n')
-    expect(text.includes('400  export const n399 = ')).toBe(true)
-    expect(text.includes('export const n400 = ')).toBe(false)
+    const rows = await rowsOf(ui)
+    expect(rows.length).toBe(400)
+    expect(rows.at(-1)?.startsWith('400  export const n399 = ')).toBe(true)
     expect(await ui.find({ text: /^… \+50 lines$/ })).toBeDefined()
+    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('show less')
     expect((await ui.findAll({})).length).toBeLessThan(4000)
     await ui.unmount()
   }
@@ -1455,6 +1459,7 @@ test('the click-anywhere preview of a new file lights a theme band on hover, nev
   expect(hoverOf(button!)).toEqual({ inverse: false, backgroundColor: previewBand(t) })
   const gutters = nodesOf(button).filter(n => n.type === 'Text' && n.props?.dimColor === true && /^ ?\d+ {2}$/.test(String(n.children?.[0])))
   expect(gutters.length).toBe(10)
+  expect((await ui.find({ key: 'fold' }))?.props.hover).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1464,31 +1469,35 @@ const editMade = (filePath: string, body: string[]) => ({
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`an Edit that makes a new file draws its numbered code in theme colors, not a diff, before Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+  test(`an Edit that makes a new file draws its first lines as added diff lines under a Created header before Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
     const body = ts(12)
     const ui = await $.ui.mount(editResult(surface, 'Edit', editMade('/home/demo/app/made.ts', body)))
     expect(await ui.find({ type: 'Text', text: /^Created made\.ts \(12 lines\)$/ })).toBeDefined()
-    expect(await rowsOf(ui)).toEqual(body.slice(0, 10).map((l, i) => `${String(i + 1).padStart(2)}  ${l}`))
-    expect((await ui.find({ type: 'Text', text: /^export$/ }))?.props.color).toBe(t.codeFlag)
-    expect(await ui.find({ type: 'Text', text: /^\+ $/ })).toBeUndefined()
-    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('+2 more lines')
+    expect(await rowsOf(ui)).toEqual(numberedRows(body.slice(0, 10), '+'))
+    expect((await ui.find({ type: 'Box', text: /^ 1 \+ export const n1 = 1$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
+    expect((await ui.findAll({ type: 'Text', text: /^\+ $/ })).map(m => m.props.color)).toEqual(Array(10).fill(t.diffAdded))
+    expect(await ui.find({ type: 'Text', text: /^\+12$/ })).toBeUndefined()
+    expect(await ui.find({ key: 'fold.rows' })).toBeUndefined()
+    expect((await ui.find({ key: 'fold' }))?.props).toMatchObject({ variant: 'secondary', label: '+2 more lines' })
     await ui.press({ key: 'fold' })
     expect((await rowsOf(ui)).length).toBe(12)
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
     await ui.unmount()
   })
 
-  test(`an Edit that makes a new file opens on a click anywhere from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+  test(`an Edit that makes a new file opens from its "… +N lines" button from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
     claudeAt(on, '2.1.295')
     const ui = await $.ui.mount(editResult(surface, 'Edit', editMade('/home/demo/app/made.ts', ts(12))))
     if (await refusedTextButtons(ui)) return
-    expect((await ui.find({ key: 'fold' }))?.text.split('\n').at(-1)).toBe('… +2 lines')
+    expect((await ui.find({ key: 'fold' }))?.text).toBe('… +2 lines')
+    expect(await ui.find({ key: 'fold.rows' })).toBeUndefined()
     await ui.press({ key: 'fold' })
-    expect((await ui.find({ key: 'fold' }))?.text).toBe(surface === 'terminal' ? [...ts(12).map((l, i) => `${String(i + 1).padStart(2)}  ${l}`), 'show less'].join('\n') : 'show less')
+    expect(await rowsOf(ui)).toEqual(numberedRows(ts(12), '+'))
+    expect((await ui.find({ key: 'fold' }))?.text).toBe('show less')
     await ui.unmount()
   })
 }
@@ -1499,7 +1508,8 @@ test('an Edit that makes a file with no newline at its end is still a new file, 
   made.structuredPatch[0]!.lines.push('\\ No newline at end of file')
   const ui = await $.ui.mount(editResult('terminal', 'Edit', made))
   expect(await ui.find({ type: 'Text', text: /^Created \/tmp\/made\.ts \(2 lines\)$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^\+ $/ })).toBeUndefined()
+  expect(await rowsOf(ui)).toEqual(['1 + a', '2 + b'])
+  expect(await ui.find({ type: 'Text', text: /^\+2$/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1538,25 +1548,26 @@ test('shell edits tell new, removed and renamed files apart from changed ones', 
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`a file a shell command creates shows its first 10 lines as numbered code, without diff marks, on ${surface}`, async ($, on) => {
+  test(`a file a shell command creates shows its first 10 lines as added diff lines under a Created header on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
     claudeAt(on, '2.1.295')
     const body = numbered(14)
     const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(madeFile('notes.py', body))))
     if (await refusedTextButtons(ui)) return
-    const drawn = (lines: string[]) => lines.map((l, i) => `${String(i + 1).padStart(2)}  ${l}`)
-    const shown = async () => (surface === 'terminal' ? (await ui.find({ key: 'fold0' }))!.text.split('\n') : [...(await rowsOf(ui)), (await ui.find({ key: 'fold0' }))!.text])
     expect(await ui.find({ type: 'Text', text: /^Created notes\.py \(14 lines\)$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^\+ $/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^\+14$/ })).toBeUndefined()
-    expect(await ui.find({ type: 'Box', text: /^\d+ \+ / })).toBeUndefined()
-    expect(await shown()).toEqual([...drawn(body.slice(0, 10)), '… +4 lines'])
+    expect(await rowsOf(ui)).toEqual(numberedRows(body.slice(0, 10), '+'))
+    expect((await ui.find({ type: 'Box', text: /^ 1 \+ line 1$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
+    const fold = await ui.find({ key: 'fold0' })
+    expect([fold?.type, fold?.props.plain, fold?.text]).toEqual(['Button', true, '… +4 lines'])
+    expect(await ui.find({ key: 'fold0.rows' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
     await ui.press({ key: 'fold0' })
-    expect(await shown()).toEqual([...drawn(body), 'show less'])
+    expect(await rowsOf(ui)).toEqual(numberedRows(body, '+'))
+    expect((await ui.find({ key: 'fold0' }))?.text).toBe('show less')
     await ui.press({ key: 'fold0' })
-    expect(await shown()).toEqual([...drawn(body.slice(0, 10)), '… +4 lines'])
+    expect(await rowsOf(ui)).toEqual(numberedRows(body.slice(0, 10), '+'))
     await ui.unmount()
   })
 
@@ -1567,29 +1578,28 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(madeFile('one.txt', ['only']), madeFile('empty.txt', []))))
     expect(await ui.find({ type: 'Text', text: /^Created one\.txt \(1 line\)$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^Created empty\.txt \(empty\)$/ })).toBeDefined()
-    expect(await rowsOf(ui)).toEqual(['1  only'])
+    expect(await rowsOf(ui)).toEqual(['1 + only'])
     expect(await ui.find({ type: 'Button' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
     await ui.unmount()
   })
 
-  test(`a file a shell command removes draws one closed line that opens to its old lines on ${surface}`, async ($, on) => {
+  test(`a file a shell command removes is one Deleted line that opens on a click to its removed lines on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
     claudeAt(on, '2.1.295')
     const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(removedFile('old.txt', ['alpha', 'beta', 'gamma']))))
     if (await refusedTextButtons(ui)) return
     const head = await ui.find({ key: 'fold0' })
-    expect(head?.type).toBe('Button')
-    expect(head?.text).toBe('Deleted old.txt (3 lines)')
+    expect([head?.type, head?.props.plain, head?.text, head?.props.label]).toEqual(['Button', true, 'Deleted old.txt (3 lines)', 'show 3 lines'])
+    expect(await ui.findAll({ type: 'Button' })).toHaveLength(1)
     expect(await rowsOf(ui)).toEqual([])
-    expect(await ui.find({ type: 'Text', text: /^alpha$/ })).toBeUndefined()
     await ui.press({ key: 'fold0' })
-    const old = ['1  alpha', '2  beta', '3  gamma']
-    if (surface === 'terminal') expect((await ui.find({ key: 'fold0' }))?.text.split('\n')).toEqual(['Deleted old.txt (3 lines)', ...old])
-    else expect(await rowsOf(ui)).toEqual(old)
-    await ui.press({ key: 'fold0' })
+    expect(await rowsOf(ui)).toEqual(['1 - alpha', '2 - beta', '3 - gamma'])
+    expect((await ui.find({ type: 'Box', text: /^1 - alpha$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffRemoved))
     expect((await ui.find({ key: 'fold0' }))?.text).toBe('Deleted old.txt (3 lines)')
+    expect(await ui.findAll({ type: 'Button' })).toHaveLength(1)
+    await ui.press({ key: 'fold0' })
     expect(await rowsOf(ui)).toEqual([])
     await ui.unmount()
   })
@@ -1613,7 +1623,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Text', text: /^Renamed / })).toBeUndefined()
     expect(await ui.find({ text: /^Deleted move-me\.txt \(2 lines\)$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^Created moved\.txt \(2 lines\)$/ })).toBeDefined()
-    expect(await rowsOf(ui)).toEqual(['1  one', '2  three'])
+    expect(await rowsOf(ui)).toEqual(['1 + one', '2 + three'])
     await ui.unmount()
   })
 
@@ -1628,7 +1638,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Text', text: /^Deleted old\.txt \(2 lines\)$/ })).toBeDefined()
     expect((await rowsOf(ui)).length).toBe(10)
     await ui.press({ key: 'fold1' })
-    expect((await rowsOf(ui)).slice(10)).toEqual(['1  alpha', '2  beta'])
+    expect((await rowsOf(ui)).slice(10)).toEqual(['1 - alpha', '2 - beta'])
     expect((await ui.find({ key: 'fold1' }))?.props.label).toBe('show less')
     await ui.unmount()
   })
@@ -1761,7 +1771,7 @@ for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
     engine(on)
     const tinted = diffStyle === 'card' || diffStyle === 'full'
     for (const surface of ['terminal', 'desktop'] as const) {
-      for (const [tool, output, changed] of [['Edit', patch, 3], ['Bash', bashEdit(), 3]] as const) {
+      for (const [tool, output, changed] of [['Edit', patch, 3], ['Bash', bashEdit(), 5]] as const) {
         const ui = await $.ui.mount(editResult(surface, tool, output))
         const boxes = await ui.findAll({ type: 'Box' })
         const row = (text: RegExp) => ui.find({ type: 'Box', text })

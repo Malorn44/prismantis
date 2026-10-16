@@ -249,8 +249,9 @@ const folder = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolv
   const folded = !open.includes(id)
   const label = folded ? look?.label ?? `+${hidden} more lines` : 'show less'
   const toggle = () => update($, unfolded, ids => (folded ? [...ids, id].slice(-500) : ids.filter(x => x !== id)))
-  if (faces && look?.face) return { folded, inPlace: true, element: <el.Button key={key} plain label={label} {...(look.hover ? { hover: look.hover } : {})} onPress={toggle}>{look.face(folded)}</el.Button> }
-  return { folded, inPlace: false, element: <el.Button key={key} variant="secondary" label={label} onPress={toggle} /> }
+  if (!faces) return { folded, faced: false, element: <el.Button key={key} variant="secondary" label={label} onPress={toggle} /> }
+  const element = look?.face ? <el.Button key={key} plain label={label} onPress={toggle}>{look.face(folded)}</el.Button> : <el.Button key={key} variant="secondary" label={label} onPress={toggle} />
+  return { folded, faced: look?.face !== undefined, element, around: (rows, hover) => <el.Button key={`${key}.rows`} plain label={label} hover={hover} onPress={toggle}>{rows}</el.Button> }
 }
 
 const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, style: Style, blocks: ReturnType<typeof parse>, columns: number, math: Map<number, Typeset> = new Map(), pictures: Map<number, Picture> = new Map(), reply?: string, open?: string[], notes?: { id: string; press: boolean }): RenderElement[] => {
