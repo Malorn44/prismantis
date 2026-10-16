@@ -1397,7 +1397,7 @@ const nodesOf = (node: unknown, out: DrawnNode[] = []): DrawnNode[] => {
 const hoverOf = (node: DrawnNode) => (node.hover ?? node.props?.hover) as { color?: string; backgroundColor?: string; inverse?: boolean } | undefined
 const pressOf = async (ui: { drawn: () => Promise<unknown> }) => nodesOf(await ui.drawn()).find(n => n.type === 'Button' && n.props?.plain === true)
 const rowsOf = async (ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text: string }[]> }) => {
-  const blocks = (await ui.findAll({ type: 'Text' })).map(r => r.text.split('\n')).filter(lines => lines.every(l => /^ *\d+ {2}/.test(l)))
+  const blocks = (await ui.findAll({ type: 'Text' })).map(r => r.text.split('\n').map(l => l.trimEnd())).filter(lines => lines.every(l => /^ *\d+ ( |[+-] )/.test(l)))
   const written = blocks.reduce<string[]>((a, b) => (b.length > a.length ? b : a), [])
   return [...written, ...(await ui.findAll({ type: 'Box' })).filter(b => /^d\d+$/.test(b.key ?? '')).map(b => b.text)]
 }
@@ -1494,8 +1494,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount(editResult(surface, 'Edit', editMade('/home/demo/app/made.ts', ts(12))))
     if (await refusedTextButtons(ui)) return
     expect((await ui.find({ key: 'fold' }))?.props).toMatchObject({ variant: 'secondary', label: '+2 more lines' })
-    expect(await ui.find({ key: 'fold.rows' })).toBeUndefined()
-    await ui.press({ key: 'fold' })
+    expect((await ui.find({ key: 'fold.rows' }))?.type).toBe(surface === 'terminal' ? 'Button' : undefined)
+    expect((await ui.find({ key: 'fold.rows' }))?.text.split('\n')[0]).toBe(surface === 'terminal' ? 'Created made.ts (12 lines)' : undefined)
+    await ui.press({ key: surface === 'terminal' ? 'fold.rows' : 'fold' })
     expect(await rowsOf(ui)).toEqual(numberedRows(ts(12), '+'))
     expect((await ui.find({ key: 'fold' }))?.props.label).toBe('show less')
     await ui.unmount()
@@ -1558,10 +1559,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Text', text: /^Created notes\.py \(14 lines\)$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^\+14$/ })).toBeUndefined()
     expect(await rowsOf(ui)).toEqual(numberedRows(body.slice(0, 10), '+'))
-    expect((await ui.find({ type: 'Box', text: /^ 1 \+ line 1$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
+    const tinted = surface === 'terminal' ? await ui.find({ type: 'Text', text: /^\+ $/ }) : await ui.find({ type: 'Box', text: /^ 1 \+ line 1$/ })
+    expect(tinted?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
     const fold = await ui.find({ key: 'fold0' })
     expect([fold?.type, fold?.props.variant, fold?.props.label]).toEqual(['Button', 'secondary', '+4 more lines'])
-    expect(await ui.find({ key: 'fold0.rows' })).toBeUndefined()
+    expect((await ui.find({ key: 'fold0.rows' }))?.text.split('\n')[0]).toBe(surface === 'terminal' ? 'Created notes.py (14 lines)' : undefined)
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
     await ui.press({ key: 'fold0' })
     expect(await rowsOf(ui)).toEqual(numberedRows(body, '+'))
@@ -1596,11 +1598,44 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await rowsOf(ui)).toEqual([])
     await ui.press({ key: 'fold0' })
     expect(await rowsOf(ui)).toEqual(['1 - alpha', '2 - beta', '3 - gamma'])
-    expect((await ui.find({ type: 'Box', text: /^1 - alpha$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffRemoved))
+    const tinted = surface === 'terminal' ? await ui.find({ type: 'Text', text: /^- $/ }) : await ui.find({ type: 'Box', text: /^1 - alpha$/ })
+    expect(tinted?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffRemoved))
     expect((await ui.find({ key: 'fold0' }))?.text).toBe('Deleted old.txt (3 lines)')
-    expect(await ui.findAll({ type: 'Button' })).toHaveLength(1)
-    await ui.press({ key: 'fold0' })
+    expect(await ui.findAll({ type: 'Button' })).toHaveLength(surface === 'terminal' ? 2 : 1)
+    await ui.press({ key: surface === 'terminal' ? 'fold0.rows' : 'fold0' })
     expect(await rowsOf(ui)).toEqual([])
+    await ui.unmount()
+  })
+
+  test(`a long diff keeps the ... row between its hunks, untinted, when it opens on a click anywhere from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+    engine(on)
+    claudeAt(on, '2.1.295')
+    const hunk = (start: number, n: number) => ({ oldStart: start, newStart: start, lines: Array.from({ length: n }, (_, i) => [`-a${start + i}`, `+b${start + i}`]).flat() })
+    const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/two.txt', structuredPatch: [hunk(1, 6), hunk(40, 6)] }))
+    if (await refusedTextButtons(ui)) return
+    const text = surface === 'terminal' ? (await ui.find({ key: 'fold.rows' }))!.text.split('\n').map(l => l.trimEnd()) : (await ui.findAll({})).map(n => n.text)
+    expect(text).toContain('...')
+    if (surface === 'terminal') {
+      expect(text[text.indexOf('...') - 1]).toBe(' 6 + b6')
+      expect(text[text.indexOf('...') + 1]).toBe('40 - a40')
+      expect((await ui.find({ type: 'Text', text: /^\.\.\.$/ }))?.props.backgroundColor).toBeUndefined()
+    }
+    await ui.unmount()
+  })
+
+  test(`a long diff opens on a click anywhere in it on the terminal, and from its button, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+    engine(on)
+    claudeAt(on, '2.1.295')
+    const body = Array.from({ length: 30 }, (_, i) => [`-old ${i}`, `+new ${i}`]).flat()
+    const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/long.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines: body }] }))
+    if (await refusedTextButtons(ui)) return
+    expect((await ui.find({ key: 'fold' }))?.props).toMatchObject({ variant: 'secondary', label: '+40 more lines' })
+    const rows = await ui.find({ key: 'fold.rows' })
+    expect(rows?.text.split('\n')[0]).toBe(surface === 'terminal' ? '+30 −30' : undefined)
+    if (surface === 'terminal') expect((await ui.find({ type: 'Text', text: /^- $/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.codeFlag))
+    await ui.press({ key: surface === 'terminal' ? 'fold.rows' : 'fold' })
+    expect(await ui.find({ text: /^new 29$/ })).toBeDefined()
+    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('show less')
     await ui.unmount()
   })
 

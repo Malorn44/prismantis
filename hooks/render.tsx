@@ -1291,12 +1291,10 @@ export const highlightFile = (el: ElementTable, style: Style, path: string | und
   )
 }
 
-const diffRows = (el: ElementTable, style: Style, shown: DiffLine[], path: string | undefined, columns: number | undefined): RenderElement[] => {
-  const { Box, Text } = el
+const diffPlan = (style: Style, shown: DiffLine[], path: string | undefined, columns: number | undefined) => {
   const t = style.theme
   const gutter = String(Math.max(0, ...shown.map(r => r.num))).length
   const [addColor, removeColor] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
-  const color = (mark: DiffLine['mark']) => (mark === '+' ? addColor : mark === '-' ? removeColor : undefined)
   const look = style.diffStyle
   const tinted = look === 'card' || look === 'full'
   const rowTints = { '+': diffTint(t.codeText, addColor), '-': diffTint(t.codeText, removeColor), ' ': undefined, '\\': undefined }
@@ -1305,18 +1303,58 @@ const diffRows = (el: ElementTable, style: Style, shown: DiffLine[], path: strin
   const segments = diffSegments(style, shown, path)
   const flags = wordFlags(shown, segments)
   const room = columns === undefined ? undefined : columns - 5 - (look === 'card' ? 4 : 0) - (look === 'bar' ? 2 : 0) - gutter - 3
-  return shown.flatMap((r, i) => {
-    const bg = tints[r.mark]
-    const gap = i > 0 && r.hunk !== shown[i - 1]!.hunk ? [<Text key={`gap${i}`} dimColor>{look === 'bar' ? '  ...' : '...'}</Text>] : []
-    return [...gap, ...visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => (
+  const parts = shown.flatMap((r, i) => visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => ({ r, i, k, part, gap: k === 0 && i > 0 && r.hunk !== shown[i - 1]!.hunk })))
+  return {
+    look, room, tints, words, parts,
+    color: (mark: DiffLine['mark']) => (mark === '+' ? addColor : mark === '-' ? removeColor : undefined),
+    lead: (look === 'bar' ? 2 : 0) + gutter + 3,
+    gap: look === 'bar' ? '  ...' : '...',
+    bar: (mark: DiffLine['mark']) => (mark === ' ' || mark === '\\' ? '  ' : '▌ '),
+    number: (r: DiffLine, k: number) => `${k || r.mark === '\\' ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `,
+    sign: (mark: DiffLine['mark']) => (mark === '\\' ? '  ' : `${mark} `),
+  }
+}
+
+const diffRows = (el: ElementTable, style: Style, shown: DiffLine[], path: string | undefined, columns: number | undefined): RenderElement[] => {
+  const { Box, Text } = el
+  const plan = diffPlan(style, shown, path, columns)
+  return plan.parts.flatMap(({ r, i, k, part, gap }) => {
+    const bg = plan.tints[r.mark]
+    return [
+      ...(gap ? [<Text key={`gap${i}`} dimColor>{plan.gap}</Text>] : []),
       <Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
-        {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' || r.mark === '\\' ? '  ' : '▌ '}</Text> : null}
-        <Text dimColor>{`${k || r.mark === '\\' ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `}</Text>
-        <Text color={color(r.mark)} dimColor={r.mark === ' '}>{r.mark === '\\' ? '  ' : `${r.mark} `}</Text>
-        <Text color={t.codeText}>{drawCode(el, style, part, bg, words[r.mark], `d${i}.${k}`)}</Text>
-      </Box>
-    ))]
+        {plan.look === 'bar' ? <Text color={plan.color(r.mark)}>{plan.bar(r.mark)}</Text> : null}
+        <Text dimColor>{plan.number(r, k)}</Text>
+        <Text color={plan.color(r.mark)} dimColor={r.mark === ' '}>{plan.sign(r.mark)}</Text>
+        <Text color={style.theme.codeText}>{drawCode(el, style, part, bg, plan.words[r.mark], `d${i}.${k}`)}</Text>
+      </Box>,
+    ]
   })
+}
+
+const diffText = (el: ElementTable, style: Style, shown: DiffLine[], path: string | undefined, columns: number | undefined): RenderElement => {
+  const { Text } = el
+  const plan = diffPlan(style, shown, path, columns)
+  const used = (part: Piece[]) => plan.lead + width(part.map(p => p.text).join(''))
+  const span = plan.look === 'full' && plan.room !== undefined ? plan.lead + plan.room : Math.max(0, ...plan.parts.map(({ part }) => used(part)))
+  return (
+    <Text key="rows">
+      {plan.parts.flatMap(({ r, i, k, part, gap }, n) => {
+        const bg = plan.tints[r.mark]
+        const on = bg ? { backgroundColor: bg } : {}
+        const key = `t${i}.${k}`
+        return [
+          ...(n ? ['\n'] : []),
+          ...(gap ? [<Text key={`${key}.g`} dimColor>{plan.gap}</Text>, '\n'] : []),
+          ...(plan.look === 'bar' ? [<Text key={`${key}.b`} color={plan.color(r.mark)} {...on}>{plan.bar(r.mark)}</Text>] : []),
+          <Text key={`${key}.n`} dimColor {...on}>{plan.number(r, k)}</Text>,
+          <Text key={`${key}.m`} color={plan.color(r.mark)} dimColor={r.mark === ' '} {...on}>{plan.sign(r.mark)}</Text>,
+          <Text key={`${key}.c`} color={style.theme.codeText} {...on}>{drawCode(el, style, part, bg, plan.words[r.mark], key)}</Text>,
+          ...(bg && span > used(part) ? [<Text key={`${key}.p`} {...on}>{' '.repeat(span - used(part))}</Text>] : []),
+        ]
+      })}
+    </Text>
+  )
 }
 
 const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
@@ -1328,15 +1366,18 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
   const shown = rows.slice(0, toggle?.folded === false ? DIFF_MAX : DIFF_LINES)
   const [addColor, removeColor] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
   const frame = style.diffStyle === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
+  const head = (
+    <Text key="head">
+      {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
+      <Text color={addColor} dimColor={added === 0}>{`+${added}`}</Text>
+      <Text> </Text>
+      <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
+    </Text>
+  )
+  const press = style.pressPreview === true ? toggle?.around : undefined
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
-      <Text>
-        {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
-        <Text color={addColor} dimColor={added === 0}>{`+${added}`}</Text>
-        <Text> </Text>
-        <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
-      </Text>
-      {diffRows(el, style, shown, path, columns)}
+      {press ? press(<Text key="all">{head}{'\n'}{diffText(el, style, shown, path, columns)}</Text>, { inverse: false }) : [head, ...diffRows(el, style, shown, path, columns)]}
       {rows.length > shown.length && toggle?.folded !== true ? <Text dimColor>{`… +${rows.length - shown.length} lines`}</Text> : null}
       {toggle?.element ?? null}
     </Box>
@@ -1489,16 +1530,27 @@ const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fo
   const toggle = n > closed ? fold(id, n - closed, `fold${key}`, created ? undefined : { label: `show ${lineCount(n)}`, face: () => head }) : null
   const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : closed)
   const lines = file.lines.slice(0, shown)
-  const press = !marked && style.pressPreview === true ? toggle?.around : undefined
-  const band = press ? previewBand(style.theme) : undefined
+  const press = style.pressPreview === true ? toggle?.around : undefined
+  const band = press && !marked ? previewBand(style.theme) : undefined
+  const diff = lines.map((text, i): DiffLine => ({ mark: created ? '+' : '-', num: i + 1, text, hunk: 0 }))
   const rows = shown === 0 ? null
-    : marked ? <Box key="rows" flexDirection="column">{diffRows(el, style, lines.map((text, i) => ({ mark: created ? '+' : '-', num: i + 1, text, hunk: 0 })), file.path, columns)}</Box>
-    : <Text key="rows">{previewText(el, style, file.path, lines, 'rows', band)}</Text>
+    : !marked ? <Text key="rows">{previewText(el, style, file.path, lines, 'rows', band)}</Text>
+    : press ? diffText(el, style, diff, file.path, columns)
+    : <Box key="rows" flexDirection="column">{diffRows(el, style, diff, file.path, columns)}</Box>
+  const hover = { inverse: false, ...(band ? { backgroundColor: band } : {}) }
   const inHead = !created && toggle?.faced === true
+  const lit = band ? (
+    <Text key="head">
+      {'Created '}
+      <Text color={style.theme.path} {...(onTint(style.theme.path, band) !== style.theme.path ? { hover: { color: onTint(style.theme.path, band) } } : {})}>{shortPath(style, file.path)}</Text>
+      <Text dimColor {...muted(style, band)}>{` (${lineCount(n)})`}</Text>
+    </Text>
+  ) : head
+  const body = press && created ? press(<Text key="all">{lit}{rows ? ['\n', rows] : null}</Text>, hover)
+    : [inHead ? toggle!.element : head, rows && press ? press(rows, hover) : rows]
   return (
     <Box key={`file${key}`} flexDirection="column">
-      {inHead ? toggle!.element : head}
-      {rows && press ? press(rows, { inverse: false, ...(band ? { backgroundColor: band } : {}) }) : rows}
+      {body}
       {n > shown && (toggle ? !toggle.folded : created) ? <Text key="rest" dimColor>{`… +${n - shown} lines`}</Text> : null}
       {toggle && !inHead ? toggle.element : null}
     </Box>
