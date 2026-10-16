@@ -244,8 +244,9 @@ const readLinkReach = async ($: EngineInterface, style: Style): Promise<LinkReac
   const base = await $.session.version().then(v => v.base, () => undefined)
   const http = takesHttpLinks(base)
   if (http) await locate($, style)
-  const files = http ? fileRoot(await $.env.get('WSL_DISTRO_NAME').catch(() => undefined)) : null
-  return { http, editor: takesEditorLinks(base), marks: takesClickableMarks(base), files, paths: http && await drawsHyperlinks($).catch(() => false) }
+  const remote = http && Boolean(await $.env.get('SSH_CONNECTION').catch(() => undefined) || await $.env.get('SSH_TTY').catch(() => undefined))
+  const files = http && !remote ? fileRoot(await $.env.get('WSL_DISTRO_NAME').catch(() => undefined)) : null
+  return { http, editor: takesEditorLinks(base), marks: takesClickableMarks(base), files, paths: files !== null && await drawsHyperlinks($).catch(() => false) }
 }
 
 const linkReach = ($: EngineInterface, probes: Probes, style: Style): Promise<LinkReach> => (probes.links ??= readLinkReach($, style))

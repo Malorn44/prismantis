@@ -674,6 +674,7 @@ for (const [where, surface, base, env] of [
   ['when the Claude Code version is unknown', 'terminal', undefined, {}],
   ['on desktop', 'desktop', '2.1.289', {}],
   ['in a terminal that draws no hyperlinks', 'terminal', '2.1.289', { FORCE_HYPERLINK: '0' }],
+  ['in a session over SSH', 'terminal', '2.1.289', { SSH_CONNECTION: '10.0.0.2 52814 10.0.0.9 22' }],
 ] as const) {
   test(`paths stay plain colored text ${where}`, async ($, on) => {
     filesAt(on, base, env)
@@ -691,6 +692,16 @@ test('a terminal that draws no hyperlinks still links file:// markdown links', a
   expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///home/me/notes.md'])
   await ui.unmount()
 })
+
+for (const env of [{ SSH_CONNECTION: '10.0.0.2 52814 10.0.0.9 22' }, { SSH_TTY: '/dev/pts/3' }] as Record<string, string>[]) {
+  test(`file:// links draw as plain text in a session over SSH (${Object.keys(env)[0]})`, async ($, on) => {
+    filesAt(on, '2.1.289', env)
+    const ui = await $.ui.mount(mount('[notes](file:///home/me/notes.md) and [docs](https://example.com)'))
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['https://example.com'])
+    expect(await ui.find({ type: 'Text', text: /^notes \(file:\/\/\/home\/me\/notes\.md\)$/ })).toBeDefined()
+    await ui.unmount()
+  })
+}
 
 test('file links on desktop draw as plain text, as before', async ($, on) => {
   filesAt(on, '2.1.289')
@@ -782,6 +793,7 @@ for (const [where, surface, base, env] of [
   ['on desktop', 'desktop', '2.1.289', {}],
   ['on Claude Code 2.1.288', 'terminal', '2.1.288', {}],
   ['in a terminal that draws no hyperlinks', 'terminal', '2.1.289', { FORCE_HYPERLINK: '0' }],
+  ['in a session over SSH', 'terminal', '2.1.289', { SSH_TTY: '/dev/pts/3' }],
 ] as const) {
   test(`tool rows keep plain paths ${where}`, async ($, on) => {
     filesAt(on, base, env)
