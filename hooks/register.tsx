@@ -11,7 +11,7 @@ import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
 import type { Fold } from './render'
-import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import { bashEdits, drawMath, editNotes, fileRoot, hasShellOutput, instanceKey, isReadOnlyCall, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import { HINT, SETUP_DONE, findSetup, helpText, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
 import type { Style } from './theme'
@@ -220,12 +220,35 @@ const htmlBackend = async ($: EngineInterface): Promise<ClipboardBackend | null>
   return await $.env.get('WAYLAND_DISPLAY') || await $.env.get('DISPLAY') ? 'linux' : null
 }
 
-type LinkReach = { http: boolean; editor: boolean; marks: boolean }
+type LinkReach = { http: boolean; editor: boolean; marks: boolean; files: string | null; paths: boolean }
 
 type Probes = { terminal?: Promise<Terminal | null>; htmlCopy?: Promise<ClipboardBackend | null>; links?: Promise<LinkReach>; images?: Promise<boolean> }
 
-const linkReach = ($: EngineInterface, probes: Probes): Promise<LinkReach> =>
-  (probes.links ??= $.session.version().then(v => ({ http: takesHttpLinks(v.base), editor: takesEditorLinks(v.base), marks: takesClickableMarks(v.base) }), () => ({ http: false, editor: false, marks: false })))
+const HYPERLINK_TERMINALS = ['ghostty', 'Hyper', 'kitty', 'alacritty', 'iTerm.app', 'iTerm2', 'WarpTerminal', 'WezTerm', 'vscode']
+
+const drawsHyperlinks = async ($: EngineInterface): Promise<boolean> => {
+  const force = await $.env.get('FORCE_HYPERLINK')
+  if (force) return Number.parseInt(force, 10) !== 0
+  const program = await $.env.get('TERM_PROGRAM')
+  const [major = 0, minor = 0] = program === 'tmux' ? ((await $.env.get('TERM_PROGRAM_VERSION')) ?? '').split('.').map(n => Number.parseInt(n, 10)) : []
+  const term = (await $.env.get('TERM')) ?? ''
+  return Boolean(await $.env.get('WT_SESSION'))
+    || major > 3 || (major === 3 && minor >= 4)
+    || [program, await $.env.get('LC_TERMINAL')].some(name => HYPERLINK_TERMINALS.includes(name ?? ''))
+    || Number(await $.env.get('VTE_VERSION')) >= 5000
+    || term === 'alacritty' || term.includes('kitty')
+    || (await $.env.get('TERMINAL_EMULATOR')) === 'JetBrains-JediTerm'
+}
+
+const readLinkReach = async ($: EngineInterface, style: Style): Promise<LinkReach> => {
+  const base = await $.session.version().then(v => v.base, () => undefined)
+  const http = takesHttpLinks(base)
+  if (http) await locate($, style)
+  const files = http ? fileRoot(await $.env.get('WSL_DISTRO_NAME').catch(() => undefined)) : null
+  return { http, editor: takesEditorLinks(base), marks: takesClickableMarks(base), files, paths: http && await drawsHyperlinks($).catch(() => false) }
+}
+
+const linkReach = ($: EngineInterface, probes: Probes, style: Style): Promise<LinkReach> => (probes.links ??= readLinkReach($, style))
 
 const probe = async ($: EngineInterface, style: Style, probes: Probes): Promise<Terminal | null> => {
   probes.terminal ??= applyRtl($, style)
@@ -352,7 +375,7 @@ export const register: Register = (on, options) => {
   const picked: Picked = { theme: firstTheme, options, latex }
   const probes: Probes = {}
   const forSurface = (base: Style, surface: RenderSurface, links: LinkReach): Style => {
-    const drawn = surface === 'terminal' ? (links.http || links.editor ? { ...base, httpLinks: links.http, editorLinks: links.editor } : base) : { ...base, htmlCopy: null, nativeCode: true }
+    const drawn = surface === 'terminal' ? (links.http || links.editor ? { ...base, httpLinks: links.http, editorLinks: links.editor, fileLinks: links.files, pathLinks: links.paths } : base) : { ...base, htmlCopy: null, nativeCode: true }
     return surface === 'mobile' && drawn.copyButtonStyle === 'hover' ? { ...drawn, copyButtonStyle: 'inline' } : drawn
   }
   const fullWidth = (text: string) => (style.reorder && hasRtl(text) ? { width: '100%' as const } : {})
@@ -479,7 +502,7 @@ export const register: Register = (on, options) => {
     const found = e.props.command === 'prismantis' ? findSetup(PRESET_NAMES, e.props.text) : undefined
     if (found) {
       const el = $.ui.resolve(e)
-      const base = { ...forSurface(fit(e.viewport), e.surface, await linkReach($, probes)), copyButtons: false }
+      const base = { ...forSurface(fit(e.viewport), e.surface, await linkReach($, probes, style)), copyButtons: false }
       return <el.Box flexDirection="column" rowGap={1}>{drawSetup($, el, base, options, found, columnsOf(e.viewport))}</el.Box>
     }
     const blocks = parseCached(e.props.text)
@@ -489,7 +512,7 @@ export const register: Register = (on, options) => {
     const math = await mathOfBlocks($, latex, e.surface, blocks)
     const pictures = await picturesOf($, style, probes, e.surface, blocks)
     const open = await read($, unfolded)
-    const reach = await linkReach($, probes)
+    const reach = await linkReach($, probes, style)
     const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     return <Box flexDirection="column" rowGap={1} {...fullWidth(e.props.text)}>{drawMarkdown($, el, surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, undefined, open, { id: e.requestId, press: reach.marks })}</Box>
   })
@@ -512,7 +535,7 @@ export const register: Register = (on, options) => {
     const narration = style.toolStyle === 'tree-bold' && blocks.length === 1 && blocks[0]!.kind === 'paragraph'
     const math = await mathOfBlocks($, latex, e.surface, blocks)
     const pictures = await picturesOf($, style, probes, e.surface, blocks)
-    const reach = await linkReach($, probes)
+    const reach = await linkReach($, probes, style)
     const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     const open = await read($, unfolded)
     return (
@@ -532,7 +555,7 @@ export const register: Register = (on, options) => {
     if (blocks.length === 0) return next(e)
     const el = $.ui.resolve({ surface: e.surface, component: 'AssistantMessage' })
     const { Box } = el
-    const surfaceStyle = forSurface(style, e.surface, await linkReach($, probes))
+    const surfaceStyle = forSurface(style, e.surface, await linkReach($, probes, style))
     return { value: <Box flexDirection="column" rowGap={1} {...fullWidth(e.text)}>{drawMarkdown($, el, { ...surfaceStyle, copyButtons: false }, blocks, Math.max(20, e.columns || 0))}</Box> }
   })
 }

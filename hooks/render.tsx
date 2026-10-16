@@ -106,43 +106,75 @@ export const takesEditorLinks = releaseFrom(EDITOR_LINKS_FROM)
 
 export const takesClickableMarks = releaseFrom(CLICKABLE_MARKS_FROM)
 
-const isHyperlink = (href: string, http: boolean, editor: boolean): boolean =>
-  (http ? /^https?:/i : /^(https:|http:\/\/localhost(:\d+)?([/?#]|$))/i).test(href) || (editor && /^vscode(-insiders)?:\/\/file\//i.test(href))
+export const fileRoot = (distro?: string): string => (distro ? `file://wsl.localhost/${encodeURIComponent(distro)}` : 'file://')
+
+type Reach = Pick<Style, 'httpLinks' | 'editorLinks' | 'fileLinks' | 'pathLinks' | 'cwd' | 'home'>
+
+const isHyperlink = (href: string, reach: Reach): boolean =>
+  (reach.httpLinks ? /^https?:/i : /^(https:|http:\/\/localhost(:\d+)?([/?#]|$))/i).test(href)
+  || (reach.editorLinks && /^vscode(-insiders)?:\/\/file\//i.test(href))
+  || (reach.fileLinks !== null && /^file:/i.test(href))
 
 const plainLink = (text: string, href: string): string => {
   const target = href.replace(/^mailto:/i, '')
   return text === target || `http://${text}` === target ? target : `${text} (${target})`
 }
 
-const unlink = (nodes: Inline[], http: boolean, editor: boolean): Inline[] =>
+const fileHref = (root: string, href: string): string => {
+  const local = /^file:\/\/(?:localhost)?(\/(?![a-z]:)[^?#]*)$/i.exec(href)
+  return local && root !== 'file://' ? `${root}${local[1]}` : href
+}
+
+const pathHref = (reach: Reach, path: string): string | undefined => {
+  const base = path.startsWith('~') ? reach.home : path.startsWith('.') ? reach.cwd : '/'
+  if (!base || reach.fileLinks === null) return undefined
+  const parts: string[] = []
+  for (const part of `${slashes(base)}/${path.replace(/^~/, '').replace(/(?<=[^/.])\.+$/, '')}`.split('/')) {
+    if (part === '..') parts.pop()
+    else if (part !== '.' && part !== '') parts.push(part)
+  }
+  const target = `/${parts.join('/')}${path.endsWith('/') ? '/' : ''}`
+  return `${reach.fileLinks}${encodeURI(target).replace(/[?#]/g, encodeURIComponent)}`
+}
+
+const hyperlinks = (nodes: Inline[], reach: Reach): Inline[] =>
   nodes.map(node => {
     const n: Inline = node.kind === 'image' && isWebLink(node.src) ? { kind: 'link', text: node.text, href: node.src } : node
-    return n.kind === 'link' && !isHyperlink(n.href, http, editor) ? { kind: 'text', text: plainLink(n.text, n.href) } : 'children' in n ? { ...n, children: unlink(n.children, http, editor) } : n
+    if (n.kind === 'link') {
+      if (!isHyperlink(n.href, reach)) return { kind: 'text', text: plainLink(n.text, n.href) }
+      return reach.fileLinks !== null && /^file:/i.test(n.href) ? { ...n, href: fileHref(reach.fileLinks, n.href) } : n
+    }
+    if (n.kind === 'path') {
+      const href = reach.pathLinks ? pathHref(reach, n.text) : undefined
+      return href === undefined ? n : { ...n, href }
+    }
+    return 'children' in n ? { ...n, children: hyperlinks(n.children, reach) } : n
   })
 
-const unlinkBlock = (block: Block, http: boolean, editor: boolean): Block => {
-  const plain = (nodes: Inline[]) => unlink(nodes, http, editor)
+const hyperlinkBlock = (block: Block, reach: Reach): Block => {
+  const drawn = (nodes: Inline[]) => hyperlinks(nodes, reach)
   switch (block.kind) {
     case 'heading':
     case 'paragraph':
-      return { ...block, inline: plain(block.inline) }
+      return { ...block, inline: drawn(block.inline) }
     case 'list':
-      return { ...block, items: block.items.map(item => ({ ...item, inline: plain(item.inline) })) }
+      return { ...block, items: block.items.map(item => ({ ...item, inline: drawn(item.inline) })) }
     case 'table':
-      return { ...block, header: block.header.map(plain), rows: block.rows.map(r => r.map(plain)) }
+      return { ...block, header: block.header.map(drawn), rows: block.rows.map(r => r.map(drawn)) }
     case 'notes':
-      return { ...block, notes: block.notes.map(note => ({ ...note, inline: plain(note.inline) })) }
+      return { ...block, notes: block.notes.map(note => ({ ...note, inline: drawn(note.inline) })) }
     default:
       return block
   }
 }
 
-const unlinked = new WeakMap<Block, Block[]>()
+const hyperlinked = new WeakMap<Block, Record<string, Block>>()
 
-const drawable = (block: Block, http: boolean, editor: boolean): Block => {
-  const cached = unlinked.get(block) ?? []
-  unlinked.set(block, cached)
-  return (cached[+http + 2 * +editor] ??= unlinkBlock(block, http, editor))
+const drawable = (block: Block, reach: Reach): Block => {
+  const cached = hyperlinked.get(block) ?? {}
+  hyperlinked.set(block, cached)
+  const key = `${+reach.httpLinks}${+reach.editorLinks}${reach.fileLinks ?? ''}${reach.pathLinks ? `\0${reach.home}\0${reach.cwd}` : ''}`
+  return (cached[key] ??= hyperlinkBlock(block, reach))
 }
 
 const mostLines = (text: string, w: number): number => (text.match(/\S+/g)?.length ?? 0) + Math.ceil(width(text) / w)
@@ -218,7 +250,7 @@ const renderInline = (el: ElementTable, style: Style, nodes: Inline[], keyBase: 
       case 'number':
         return <Text key={key} color={t.number}>{n.text}</Text>
       case 'path':
-        return <Text key={key} color={t.path}>{n.text}</Text>
+        return <Text key={key} color={t.path}>{n.href === undefined ? n.text : <el.Link href={n.href} label={n.text} />}</Text>
       case 'dim':
         return <Text key={key} dimColor>{n.text}</Text>
       case 'footnote':
@@ -772,7 +804,7 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
     minWidth: reserved(parts),
     element: <Box position="absolute" {...(low ? { bottom: 0 } : { top: 0 })} {...(start ? { left: 0 } : { right: 0 })} display="none" hover={{ display: 'flex' }}>{button}</Box>,
   } : null)
-  const shown = blocks.map(block => drawable(block, style.httpLinks, style.editorLinks))
+  const shown = blocks.map(block => drawable(block, style))
   const rtlTables = shown.map(block => style.reorder && block.kind === 'table' && isRtlTable(style, block))
   const buttons = blocks.map((block, b) => {
     const text = hover && holdsOnlyEmptyCode(block) ? undefined : copySource(style, block)

@@ -37,6 +37,8 @@ export type Style = {
   nativeCode?: boolean
   httpLinks: boolean
   editorLinks: boolean
+  fileLinks: string | null
+  pathLinks: boolean
   diagramHints: boolean
   rtl: 'auto' | Terminal | 'off'
   reorder: boolean
@@ -87,6 +89,8 @@ export const resolveStyle = (options: PluginOptions): Style => {
     htmlCopy: null,
     httpLinks: false,
     editorLinks: false,
+    fileLinks: null,
+    pathLinks: false,
     diagramHints: options.diagramHints !== false && options.mermaid !== false,
     rtl,
     reorder: rtl !== 'auto' && rtl !== 'off',
