@@ -1079,8 +1079,8 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
   const lastRowOf = (b: number, cells: number): number => {
     const block = shown[b]!
     const art = drawn.get(b)?.art
-    if (block.kind === 'code' && drawn.get(b)?.element) {
-      const shape = art === undefined ? undefined : artShape(art, columns)
+    if (drawn.get(b)?.element) {
+      const shape = block.kind === 'code' && art !== undefined ? artShape(art, columns) : undefined
       return shape?.last ?? shape?.first ?? FULL
     }
     if (block.kind === 'code') {

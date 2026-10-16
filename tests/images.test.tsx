@@ -104,6 +104,16 @@ test('image sources resolve to local files or inline bytes only', async () => {
   expect(fitImage({ width: 400, height: 4000 }, 80).rows).toBe(20)
 })
 
+test('copyButtonStyle hover keeps ⧉ copy reply off a closing picture\'s rows, in the blank row above it', { options: { copyButtonStyle: 'hover' } }, async ($, on) => {
+  mock.env(on, KITTY)
+  files(on, { '/home/me/shot.png': PNG_160x80 })
+  const ui = await $.ui.mount(reply('Here:\n\n![the screenshot](~/shot.png)'))
+  expect(await ui.find({ type: 'Image' })).toBeDefined()
+  const floats = (await ui.findAll({ type: 'Box' })).filter(b => b.props.position === 'absolute' && b.props.display === 'none' && b.text === '⧉ copy reply')
+  expect(floats.map(b => ({ top: b.props.top, bottom: b.props.bottom, right: b.props.right }))).toEqual([{ top: -1, bottom: undefined, right: 0 }])
+  await ui.unmount()
+})
+
 test('the demo carries an image sample', async () => {
   const blocks = parse(showcaseText([]), { numbers: false, paths: false })
   expect(blocks.some(b => b.kind === 'paragraph' && b.inline.length === 1 && b.inline[0]!.kind === 'image')).toBe(true)
