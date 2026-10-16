@@ -1476,12 +1476,13 @@ test('the language of a diff comes from its path', () => {
   expect(pathLanguage(undefined)).toBeUndefined()
 })
 
-test('an edit to a .ts file highlights its code on added, removed and context lines', async ($, on) => {
+test('an edit to a .ts file highlights its added and context lines, and draws removed lines plain as Claude Code does', async ($, on) => {
   engine(on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount(editResult(surface, 'Edit', patch))
     expect(await tokensOf(ui, /^const a = 1$/)).toEqual([['const', t.codeFlag, false], ['1', t.number, false]])
-    expect(await tokensOf(ui, /^const b = 2$/)).toEqual([['const', onTint(t.codeFlag, removeTint), false], ['2', onTint(t.number, removeTint), false]])
+    expect((await ui.find({ type: 'Text', text: /^const b = 2$/ }))?.children?.[0]).toBe('const b = ')
+    expect(await tokensOf(ui, /^const b = 2$/)).toEqual([['2', onTint(t.codeText, wordTint(t.codeText, t.codeFlag)!), false]])
     expect(await tokensOf(ui, /^const c = 4$/)).toEqual([['const', onTint(t.codeFlag, addTint), false], ['4', onTint(t.number, addTint), false]])
     expect((await ui.find({ type: 'Text', text: /^const c = 4$/ }))?.children?.[1]).toBe(' c = ')
     expect((await ui.find({ type: 'Text', text: /^const a = 1$/ }))?.props).toEqual({ color: t.codeText })
@@ -1489,20 +1490,20 @@ test('an edit to a .ts file highlights its code on added, removed and context li
   }
 })
 
-test('a comment or string spanning lines keeps its color on every line of the diff', async ($, on) => {
+test('a comment or string spanning lines keeps its color on every added and context line of the diff, removed lines staying plain', async ($, on) => {
   engine(on)
   const comment = [' <!-- opening', '-old note', '+rewritten remark', ' closing -->', ' <p>after</p>']
   const string = [' const x = `one', '-two', '+three', ' four`', ' let y = 2']
   for (const surface of ['terminal', 'desktop'] as const) {
     const page = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/span.html', structuredPatch: [{ oldStart: 1, newStart: 1, lines: comment }] }))
-    expect(await tokensOf(page, /^old note$/)).toEqual([['old note', onTint(t.codeComment, removeTint), true]])
+    expect((await page.find({ type: 'Text', text: /^old note$/ }))?.children).toEqual(['old note'])
     expect(await tokensOf(page, /^rewritten remark$/)).toEqual([['rewritten remark', onTint(t.codeComment, addTint), true]])
     expect(await tokensOf(page, /^closing -->$/)).toEqual([['closing -->', t.codeComment, true]])
     expect((await tokensOf(page, /^<p>after<\/p>$/))[0]?.[1]).toBe(t.link)
     await page.unmount()
     const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/span.ts', structuredPatch: [{ oldStart: 1, newStart: 1, lines: string }] }))
     expect((await tokensOf(ui, /^const x = `one$/))[0]).toEqual(['const', t.codeFlag, false])
-    expect(await tokensOf(ui, /^two$/)).toEqual([['two', onTint(t.codeString, removeTint), false]])
+    expect((await ui.find({ type: 'Text', text: /^two$/ }))?.children).toEqual(['two'])
     expect(await tokensOf(ui, /^three$/)).toEqual([['three', onTint(t.codeString, addTint), false]])
     expect(await tokensOf(ui, /^four`$/)).toEqual([['four`', t.codeString, false]])
     expect((await tokensOf(ui, /^let y = 2$/))[0]).toEqual(['let', t.codeFlag, false])
@@ -1601,7 +1602,8 @@ for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
     const [addWord, removeWord] = tinted ? [wordTint(t.codeText, t.number)!, wordTint(t.codeText, t.codeFlag)!] : [addTint, removeTint]
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount(editResult(surface, 'Edit', greetEdit))
-      expect(await litOf(ui)).toEqual([['hello', removeWord, onTint(t.codeString, removeWord)], ['hey', addWord, onTint(t.codeString, addWord)]])
+      expect(await litOf(ui)).toEqual([['hello', removeWord, onTint(t.codeText, removeWord)], ['hey', addWord, onTint(t.codeString, addWord)]])
+      expect((await ui.find({ type: 'Text', text: /^return `hello \$\{trimmed\}`$/ }))?.children?.[0]).toBe('return `')
       expect((await tokensOf(ui, /^return `hey \$\{trimmed\}`$/))[0]).toEqual(['return', tinted ? onTint(t.codeFlag, addTint) : t.codeFlag, false])
       expect((await ui.find({ type: 'Box', text: /^(▌ )?7 \+ return `hey \$\{trimmed\}`$/ }))?.props.backgroundColor).toBe(tinted ? addTint : undefined)
       await ui.unmount()

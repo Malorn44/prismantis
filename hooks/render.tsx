@@ -1155,17 +1155,13 @@ const fileSegments = (style: Style, path: string | undefined, lines: string[]): 
 }
 
 const diffSegments = (style: Style, rows: DiffLine[], path: string | undefined): Segment[][] => {
-  const out: Segment[][] = rows.map(r => (r.mark === '\\' && r.text ? [{ text: r.text, italic: false }] : []))
+  const out: Segment[][] = rows.map(r => ((r.mark === '-' || r.mark === '\\') && r.text ? [{ text: r.text, italic: false }] : []))
   let start = 0
   while (start < rows.length) {
     let end = start
     while (end < rows.length && rows[end]!.hunk === rows[start]!.hunk) end++
-    const at = Array.from({ length: end - start }, (_, i) => start + i)
-    const before = at.filter(r => rows[r]!.mark === ' ' || rows[r]!.mark === '-')
-    const after = at.filter(r => rows[r]!.mark === ' ' || rows[r]!.mark === '+')
-    const old = fileSegments(style, path, before.map(r => rows[r]!.text))
+    const after = Array.from({ length: end - start }, (_, i) => start + i).filter(r => rows[r]!.mark === ' ' || rows[r]!.mark === '+')
     const now = fileSegments(style, path, after.map(r => rows[r]!.text))
-    before.forEach((r, i) => (out[r] = old[i]!))
     after.forEach((r, i) => (out[r] = now[i]!))
     start = end
   }
