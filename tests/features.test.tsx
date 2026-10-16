@@ -1115,15 +1115,51 @@ test('an opened diff card stops at 400 lines and counts the rest', async ($, on)
   }
 })
 
-test('a long diff line wraps right of the gutter and mark', async ($, on) => {
-  engine(on)
-  for (const surface of ['terminal', 'desktop'] as const) {
+for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
+  test(`diffStyle ${diffStyle} wraps a long line into rows that each repeat its mark, bar and tint, numbered once`, { options: { diffStyle } }, async ($, on) => {
+    engine(on)
+    const tinted = diffStyle === 'card' || diffStyle === 'full'
     const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(' ')
-    const ui = await $.ui.mount({ ...editResult(surface, 'Write', { type: 'create', filePath: '/tmp/w.txt', content: long }), viewport: { columns: 60, rows: 20 } })
-    const line = await ui.find({ type: 'Text', text: long })
-    expect(line?.props.wrap).not.toBe('truncate-end')
-    expect(await ui.find({ type: 'Text', text: /^1 $/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^\+ $/ })).toBeDefined()
+    const room = 60 - 5 - (diffStyle === 'card' ? 4 : 0) - (diffStyle === 'bar' ? 2 : 0) - 1 - 3
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ ...editResult(surface, 'Edit', { filePath: '/tmp/w.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines: ['-short', `+${long}`] }] }), viewport: { columns: 60, rows: 20 } })
+      const rows = (await ui.findAll({ type: 'Box' })).filter(b => /^d1(\.\d+)?$/.test(b.key ?? ''))
+      expect(rows.length).toBeGreaterThan(2)
+      rows.forEach((row, k) => {
+        expect(row.text.startsWith(`${diffStyle === 'bar' ? '▌ ' : ''}${k ? ' ' : '1'} + `)).toBe(true)
+        expect(row.props.backgroundColor).toBe(tinted ? addTint : undefined)
+        expect(row.text.length - (diffStyle === 'bar' ? 6 : 4)).toBeLessThanOrEqual(room)
+      })
+      expect(rows.map(r => r.text.slice(diffStyle === 'bar' ? 6 : 4)).join('')).toBe(long)
+      expect((await ui.findAll({ type: 'Text', text: /^\+ $/ })).length).toBe(rows.length)
+      await ui.unmount()
+    }
+  })
+}
+
+test('a diff line with no room to spare, or no known width, stays one row', async ($, on) => {
+  engine(on)
+  const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(' ')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const viewport of [undefined, { columns: 20, rows: 20 }]) {
+      const ui = await $.ui.mount({ ...editResult(surface, 'Write', { type: 'create', filePath: '/tmp/w.txt', content: long }), ...(viewport ? { viewport } : {}) })
+      expect((await ui.find({ type: 'Text', text: long }))?.props.wrap).toBeUndefined()
+      expect((await ui.findAll({ type: 'Text', text: /^\+ $/ })).length).toBe(1)
+      await ui.unmount()
+    }
+  }
+})
+
+test('a wrapped line breaks inside a word that is wider than the row, and draws tabs as spaces to the next stop of 8', async ($, on) => {
+  engine(on)
+  const word = 'x'.repeat(70)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...editResult(surface, 'Edit', { filePath: '/tmp/w.go', structuredPatch: [{ oldStart: 1, newStart: 1, lines: [`+${word}`, '+\tport := 1', '+ab\tc'] }] }), viewport: { columns: 60, rows: 20 } })
+    const rows = (await ui.findAll({ type: 'Box' })).filter(b => /^d0(\.\d+)?$/.test(b.key ?? ''))
+    expect(rows.map(r => r.text.slice(4)).join('')).toBe(word)
+    expect(rows.length).toBe(2)
+    expect((await ui.findAll({ type: 'Box' })).find(b => b.key === 'd1')?.text).toBe('2 +         port := 1')
+    expect((await ui.findAll({ type: 'Box' })).find(b => b.key === 'd2')?.text).toBe('3 + ab      c')
     await ui.unmount()
   }
 })
