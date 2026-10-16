@@ -1196,6 +1196,65 @@ const wordPieces = (segs: Segment[], flags: boolean[] | null): Piece[] => {
   return merged(segs.flatMap(s => (flags ? (s.text.match(WORD) ?? []).map(text => ({ ...s, text, word: flags[u++]! })) : [{ ...s, word: false }])))
 }
 
+const TAB = 8
+
+const tabbed = (pieces: Piece[]): Piece[] => {
+  if (!pieces.some(p => p.text.includes('\t'))) return pieces
+  let col = 0
+  return pieces.map(p => {
+    let text = ''
+    for (const g of graphemes(p.text)) {
+      const out = g === '\t' ? ' '.repeat(TAB - (col % TAB)) : g
+      text += out
+      col += width(out)
+    }
+    return { ...p, text }
+  })
+}
+
+const rowStarts = (text: string, room: number): number[] => {
+  const starts = [0]
+  let [used, at, space, seen] = [0, 0, -1, false]
+  for (const g of graphemes(text)) {
+    const step = width(g)
+    const from = starts[starts.length - 1]!
+    if (used + step > room && at > from) {
+      const cut = space > from ? space : at
+      starts.push(cut)
+      used = width(text.slice(cut, at))
+      seen = /\S/.test(text.slice(cut, at))
+      space = -1
+    }
+    at += g.length
+    used += step
+    if (/\s/.test(g)) space = seen ? at : space
+    else seen = true
+  }
+  return starts
+}
+
+const splitRows = (pieces: Piece[], starts: number[]): Piece[][] => {
+  const rows: Piece[][] = starts.map(() => [])
+  let [at, r] = [0, 0]
+  for (const p of pieces) {
+    for (let from = 0; from < p.text.length; ) {
+      while (r + 1 < starts.length && starts[r + 1]! <= at + from) r++
+      const end = Math.min(p.text.length, (starts[r + 1] ?? Infinity) - at)
+      rows[r]!.push({ ...p, text: p.text.slice(from, end) })
+      from = end
+    }
+    at += p.text.length
+  }
+  return rows
+}
+
+const DIFF_ROOM = 8
+
+const visualRows = (pieces: Piece[], room: number | undefined): Piece[][] => {
+  const text = pieces.map(p => p.text).join('')
+  return room === undefined || room < DIFF_ROOM || width(text) <= room ? [pieces] : splitRows(pieces, rowStarts(text, room))
+}
+
 const drawCode = ({ Text }: ElementTable, style: Style, pieces: Piece[], bg: string | undefined, word: string | undefined, key: string): RenderNode[] | string => {
   if (!pieces.length) return ' '
   return pieces.map((p, j) => {
@@ -1222,7 +1281,7 @@ export const highlightFile = (el: ElementTable, style: Style, path: string | und
   )
 }
 
-const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, title?: string): RenderElement => {
+const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
   const { Box, Text } = el
   const t = style.theme
   const added = rows.filter(r => r.mark === '+').length
@@ -1240,6 +1299,7 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
   const frame = look === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
   const segments = diffSegments(style, shown, path)
   const flags = wordFlags(shown, segments)
+  const room = columns === undefined ? undefined : columns - 5 - (look === 'card' ? 4 : 0) - (look === 'bar' ? 2 : 0) - gutter - 3
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
       <Text>
@@ -1248,16 +1308,16 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
         <Text> </Text>
         <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
       </Text>
-      {shown.map((r, i) => {
+      {shown.flatMap((r, i) => {
         const bg = tints[r.mark]
-        return (
-          <Box key={`d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
+        return visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => (
+          <Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
             {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' ? '  ' : '▌ '}</Text> : null}
-            <Text dimColor>{`${String(r.num).padStart(gutter)} `}</Text>
+            <Text dimColor>{`${k ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `}</Text>
             <Text color={color(r.mark)} dimColor={r.mark === ' '}>{`${r.mark} `}</Text>
-            <Text color={t.codeText}>{drawCode(el, style, wordPieces(segments[i]!, flags[i] ?? null), bg, words[r.mark], `d${i}`)}</Text>
+            <Text color={t.codeText}>{drawCode(el, style, part, bg, words[r.mark], `d${i}.${k}`)}</Text>
           </Box>
-        )
+        ))
       })}
       {rows.length > shown.length && toggle?.folded !== true ? <Text dimColor>{`… +${rows.length - shown.length} lines`}</Text> : null}
       {toggle?.element ?? null}
@@ -1272,10 +1332,10 @@ const diffRow = (el: ElementTable, style: Style, cards: RenderElement[], below: 
   </el.Box>
 )
 
-export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, fold: Fold, id: string): RenderElement | undefined => {
+export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, fold: Fold, id: string, columns?: number): RenderElement | undefined => {
   const rows = diffLines(output)
   const path = (output as { filePath?: unknown }).filePath
-  return rows === undefined ? undefined : diffRow(el, style, [diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined)], false)
+  return rows === undefined ? undefined : diffRow(el, style, [diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined, columns)], false)
 }
 
 type EditedFile = { path: string; rows: DiffLine[] }
@@ -1314,8 +1374,8 @@ export const hasShellOutput = (output: unknown): boolean => {
   return lines(out.stdout).length + lines(out.stderr).length > 0
 }
 
-export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = []): RenderElement => {
-  const cards = edits.files.map((file, i) => diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), file.path, shortPath(style, file.path)))
+export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = [], columns?: number): RenderElement => {
+  const cards = edits.files.map((file, i) => diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), file.path, columns, shortPath(style, file.path)))
   const more = edits.more ? [<el.Text key="more" dimColor>{`… +${edits.more} more ${edits.more === 1 ? 'file' : 'files'}`}</el.Text>] : []
   const said = notes.map((note, i) => <el.Text key={`note${i}`} dimColor>{`(${note})`}</el.Text>)
   return diffRow(el, style, [...cards, ...more, ...said], below)
