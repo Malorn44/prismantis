@@ -289,7 +289,7 @@
     "diffStyle": {
       "type": "string",
       "title": "Diff style",
-      "description": "How edit and shell edit diffs draw. card: a rounded box with tinted lines. full: no box, each changed line tinted across the width. marks: no box and no tint, changed lines in the theme's diff colors. bar: no box and no tint, a colored ▌ before each changed line.",
+      "description": "How edit and shell edit diffs draw. card: a rounded box with tinted lines. full: no box, each changed line tinted across the width. marks: no box and no tint, only the +/- marks in the theme's diff colors. bar: no box and no tint, a colored ▌ before each changed line. Every style highlights the code and marks the changed words.",
       "default": "card",
       "options": ["card", "full", "marks", "bar"]
     },
