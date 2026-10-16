@@ -1,4 +1,5 @@
 import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { helpText, setupParts, setupText, showcaseText } from '../hooks/help'
@@ -363,6 +364,7 @@ test('the help screen shows every element prismantis draws', async () => {
   expect(links.some(l => l.kind === 'link' && l.href.startsWith('file:///'))).toBe(true)
   expect(blocks.some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text.startsWith('./')) && b.inline.some(n => n.kind === 'path' && n.text.startsWith('~/')))).toBe(true)
   expect(showcaseText([])).toContain('open on click in a terminal that draws hyperlinks')
+  expect(showcaseText([])).toContain('the file each one read or edited opens on click')
   expect(showcaseText([])).toContain('f(*args, **kwargs)')
   expect(blocks.some(b => b.kind === 'list' && b.items.some(i => i.task === true) && b.items.some(i => i.task === false) && b.items.some(i => i.depth > 0 && i.task !== undefined))).toBe(true)
   expect(kinds.has('notes')).toBe(true)
@@ -867,6 +869,91 @@ test('/prismantis setup samples draw their made-up paths without links', async (
   expect((await ui.findAll({ type: 'Link' })).map(l => String(l.props.href)).filter(href => href.startsWith('file:'))).toEqual([])
   await ui.unmount()
 })
+
+const toolCall = (tool: string, input: unknown, id: string) => ({ tool_use_id: id, tool, input, isRunning: false, isErrored: false, isInterrupted: false })
+
+const linkPairs = async (ui: { findAll: (query: { type: 'Link' }) => Promise<{ props: { label?: unknown; href?: unknown } }[]> }) =>
+  (await ui.findAll({ type: 'Link' })).map(l => [l.props.label, l.props.href])
+
+const toolLinks = async ($: Engine, tool: string, input: unknown) => {
+  const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolUse', props: toolCall(tool, input, `t-${tool}`) })
+  const links = await linkPairs(ui)
+  await ui.unmount()
+  return links
+}
+
+for (const toolOutput of ['full', 'quiet'] as const) {
+  test(`file paths in tool rows link to the whole file (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
+    filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
+    if (!(await linksHttp($.ui.mount(mount('[x](file:///x)'))))) return
+    const root = 'file://wsl.localhost/Ubuntu'
+    expect(await toolLinks($, 'Read', { file_path: '/work/app/src/main.ts' })).toEqual([['src/main.ts', `${root}/work/app/src/main.ts`]])
+    expect(await toolLinks($, 'Edit', { file_path: '/home/me/notes/todo.md' })).toEqual([['~/notes/todo.md', `${root}/home/me/notes/todo.md`]])
+    expect(await toolLinks($, 'Write', { file_path: '/srv/one/two/three/four/five/six.ts' })).toEqual([[toolOutput === 'quiet' ? '/srv/one/…/five/six.ts' : '/srv/one/two/three/four/five/six.ts', `${root}/srv/one/two/three/four/five/six.ts`]])
+    expect(await toolLinks($, 'Grep', { pattern: 'TODO', path: 'src' })).toEqual([['src', `${root}/work/app/src`]])
+    expect(await toolLinks($, 'Glob', { pattern: '*.ts' })).toEqual([])
+    expect(await toolLinks($, 'Bash', { command: 'cat /srv/app/main.ts' })).toEqual([])
+    expect(await toolLinks($, 'mcp__github__get_file_contents', { owner: 'o', repo: 'r', path: 'README.md' })).toEqual([])
+  })
+
+  test(`a tool group links its file paths (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (!(await linksHttp($.ui.mount(mount('[x](file:///x)'))))) return
+    const calls = [toolCall('Read', { file_path: '/work/app/a.ts' }, 'g-1'), toolCall('Read', { file_path: '/work/app/b.ts' }, 'g-2')]
+    const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolGroup', props: { calls, isActive: false, isExpanded: false } })
+    const b = ['b.ts', 'file:///work/app/b.ts']
+    expect(await linkPairs(ui)).toEqual(toolOutput === 'quiet' ? [['a.ts', 'file:///work/app/a.ts'], b] : [b])
+    await ui.unmount()
+  })
+}
+
+test('Windows paths in tool rows link with forward slashes, and UNC paths name their server', async ($, on) => {
+  filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[x](file:///x)'))))) return
+  expect(await toolLinks($, 'Grep', { pattern: 'x', path: 'src\\hooks' })).toEqual([['src\\hooks', 'file:///work/app/src/hooks']])
+  expect(await toolLinks($, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([['C:\\Users\\me\\x.ts', 'file:///C:/Users/me/x.ts']])
+  expect(await toolLinks($, 'Read', { file_path: '\\\\server\\share\\x.txt' })).toEqual([['\\\\server\\share\\x.txt', 'file://server/share/x.txt']])
+})
+
+test('under WSL a drive path in a tool row is already a Windows path, so it links without wsl.localhost', async ($, on) => {
+  filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
+  if (!(await linksHttp($.ui.mount(mount('[x](file:///x)'))))) return
+  expect(await toolLinks($, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([['C:\\Users\\me\\x.ts', 'file:///C:/Users/me/x.ts']])
+  expect(await toolLinks($, 'Edit', { file_path: 'C:/Users/me/y.ts' })).toEqual([['C:/Users/me/y.ts', 'file:///C:/Users/me/y.ts']])
+  expect(await toolLinks($, 'Read', { file_path: '/work/app/z.ts' })).toEqual([['z.ts', 'file://wsl.localhost/Ubuntu/work/app/z.ts']])
+})
+
+test('a tool path whose link would pass 2048 characters stays text, and the row still draws', async ($, on) => {
+  filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[x](file:///x)'))))) return
+  expect(await toolLinks($, 'Read', { file_path: `/work/app/${'文档/'.repeat(110)}说明.md` })).toEqual([])
+  expect(await toolLinks($, 'Read', { file_path: '/work/app/a b#c?d%e é.ts' })).toEqual([['a b#c?d%e é.ts', 'file:///work/app/a%20b%23c%3Fd%25e%20%C3%A9.ts']])
+})
+
+test('shell edit cards link their file headers', async ($, on) => {
+  filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[x](file:///x)'))))) return
+  const output = { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/work/app/src/app.ts', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+one'] }] }], moreFiles: 0 } }
+  const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolResult', props: { tool_use_id: 'be-1', tool: 'Bash', output, isErrored: false } })
+  expect(await linkPairs(ui)).toEqual([['src/app.ts', 'file:///work/app/src/app.ts']])
+  expect((await ui.find({ type: 'Text', text: /^src\/app\.ts $/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+  await ui.unmount()
+})
+
+for (const [where, surface, base, env] of [
+  ['on desktop', 'desktop', '2.1.289', {}],
+  ['on Claude Code 2.1.288', 'terminal', '2.1.288', {}],
+  ['in a terminal that draws no hyperlinks', 'terminal', '2.1.289', { FORCE_HYPERLINK: '0' }],
+  ['in a session over SSH', 'terminal', '2.1.289', { SSH_TTY: '/dev/pts/3' }],
+] as const) {
+  test(`tool rows keep plain paths ${where}`, async ($, on) => {
+    filesAt(on, base, env)
+    const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/work/app/src/main.ts' }, 'p-1') })
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    expect((await ui.find({ type: 'Text', text: /^src\/main\.ts$/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+    await ui.unmount()
+  })
+}
 
 test('links that cannot be clicked draw as plain text with their target, as Claude Code draws them', async $ => {
   for (const surface of ['terminal', 'desktop'] as const) {
