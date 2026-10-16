@@ -1137,6 +1137,35 @@ for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
   })
 }
 
+const noNewline = { filePath: '/tmp/version.py', structuredPatch: [{ oldStart: 1, newStart: 1, lines: [' NAME = "tank"', '-VERSION = "1.0"', '\\ No newline at end of file', '+VERSION = "1.1"', '\\ No newline at end of file'] }] }
+
+test('a diff keeps the no-newline marker as a row of its own that numbers nothing', () => {
+  expect(diffLines(noNewline)?.map(r => `${r.num}${r.mark}${r.text}`)).toEqual(['1 NAME = "tank"', '2-VERSION = "1.0"', '0\\ No newline at end of file', '2+VERSION = "1.1"', '0\\ No newline at end of file'])
+})
+
+for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
+  test(`diffStyle ${diffStyle} draws the no-newline marker plain and untinted, with no number or mark`, { options: { diffStyle } }, async ($, on) => {
+    engine(on)
+    const tinted = diffStyle === 'card' || diffStyle === 'full'
+    const lead = diffStyle === 'bar' ? '▌ ' : ''
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount(editResult(surface, 'Edit', noNewline))
+      const rows = (await ui.findAll({ type: 'Box' })).filter(b => /^d\d+$/.test(b.key ?? ''))
+      expect(rows.map(r => r.text)).toEqual([
+        `${diffStyle === 'bar' ? '  ' : ''}1   NAME = "tank"`,
+        `${lead}2 - VERSION = "1.0"`,
+        `${diffStyle === 'bar' ? '  ' : ''}     No newline at end of file`,
+        `${lead}2 + VERSION = "1.1"`,
+        `${diffStyle === 'bar' ? '  ' : ''}     No newline at end of file`,
+      ])
+      expect(rows.map(r => r.props.backgroundColor)).toEqual(tinted ? [undefined, removeTint, undefined, addTint, undefined] : [undefined, undefined, undefined, undefined, undefined])
+      expect((await ui.find({ type: 'Text', text: /^ No newline at end of file$/ }))?.props).toEqual({ color: t.codeText })
+      expect((await litOf(ui)).map(l => l[0])).toEqual(['0', '1'])
+      await ui.unmount()
+    }
+  })
+}
+
 test('a diff line with no room to spare, or no known width, stays one row', async ($, on) => {
   engine(on)
   const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(' ')
