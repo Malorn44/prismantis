@@ -284,12 +284,11 @@ const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['
     }
   }
   const tip = notes?.press ? noteTip(blocks, text => void $.ui.toast(text)) : undefined
-  const elements = renderBlocks(el, notes ? { ...style, noteKey: instanceKey(notes.id) } : style, blocks, columns, drawMath(el, style, blocks, drawn), copy, folder($, el, open), tip)
   const button = reply === undefined ? null : copy(reply, 'reply', '⧉ copy reply')
-  if (!button) return elements
-  return style.copyButtonStyle === 'hover'
-    ? [...elements, <el.Box position="absolute" bottom={0} right={0} display="none" hover={{ display: 'flex' }}>{button}</el.Box>]
-    : [...elements, <el.Box key="reply" alignSelf="flex-end">{button}</el.Box>]
+  const hover = style.copyButtonStyle === 'hover'
+  const elements = renderBlocks(el, notes ? { ...style, noteKey: instanceKey(notes.id) } : style, blocks, columns, drawMath(el, style, blocks, drawn), copy, folder($, el, open), tip, { open: true, gap: true, full: true, reply: hover ? button : null })
+  if (!button || hover) return elements
+  return [...elements, <el.Box key="reply" alignSelf="flex-end">{button}</el.Box>]
 }
 
 const THEME_ARGS = [...PRESET_NAMES, 'random']

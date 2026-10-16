@@ -472,13 +472,19 @@ const clip = ({ Box }: ElementTable, w: number, drawn: RenderElement, key?: stri
   </Box>
 )
 
-const renderTable = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'table' }>, columns: number, key: string, rtl: boolean, tip?: Tip) => {
-  const { Box, Text } = el
-  const t = style.theme
+const tableLayout = (style: Style, block: Extract<Block, { kind: 'table' }>, columns: number) => {
   const box = style.tableStyle === 'box'
   const gap = box ? 0 : style.tableStyle === 'grid' ? 3 : 2
   const { natural, words } = tableSize(block)
   const widths = box ? columnWidths(natural, columns - 4, 3, words) : columnWidths(natural, columns, gap, words)
+  const sum = widths.reduce((a, b) => a + b, 0)
+  return { box, gap, natural, widths, width: box ? sum + 3 * (widths.length - 1) + 4 : sum + gap * (widths.length - 1) }
+}
+
+const renderTable = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'table' }>, columns: number, key: string, rtl: boolean, tip?: Tip) => {
+  const { Box, Text } = el
+  const t = style.theme
+  const { box, gap, natural, widths } = tableLayout(style, block, columns)
   const order = natural.map((_, c) => c)
   if (rtl) order.reverse()
   const ruleChar = style.tableStyle === 'grid' ? '━' : '─'
@@ -615,19 +621,20 @@ const leadInline = (blocks: Block[]): Inline[] => {
   return first?.kind === 'quote' || first?.kind === 'alert' ? leadInline(first.blocks) : []
 }
 
-const renderNested = (el: ElementTable, style: Style, blocks: Block[], columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip) =>
-  renderBlocks(el, style, blocks, columns, drawMath(el, style, blocks), copy && ((text, id, label, html) => copy(text, `${key}.${id}`, label, html)), fold && ((id, hidden, k) => fold(id, hidden, `${key}.${k}`)), tip)
+const renderNested = (el: ElementTable, style: Style, blocks: Block[], columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip, room?: Room) =>
+  renderBlocks(el, style, blocks, columns, drawMath(el, style, blocks), copy && ((text, id, label, html) => copy(text, `${key}.${id}`, label, html)), fold && ((id, hidden, k) => fold(id, hidden, `${key}.${k}`)), tip, room)
 
 const quoteBar = (el: ElementTable, text: string, color: string | undefined, lines: number) =>
   lines <= 1 ? <el.Text color={color}>{text}</el.Text> : clip(el, width(text), <el.Text color={color}>{Array.from({ length: lines }, () => text).join('\n')}</el.Text>)
 
-const renderQuote = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'quote' }>, columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip) => {
+const renderQuote = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'quote' }>, columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip, room?: Room) => {
   const { Box } = el
   const t = style.theme
   const inner = columns - 2
   const lines = heightOf(block.blocks, inner)
-  const body = <Box flexDirection="column" rowGap={1}>{renderNested(el, { ...style, inside: 'quote' }, block.blocks, inner, key, copy, fold, tip)}</Box>
-  if (flowOf(style, leadInline(block.blocks), inner)?.base === 'R') {
+  const rtl = flowOf(style, leadInline(block.blocks), inner)?.base === 'R'
+  const body = <Box flexDirection="column" rowGap={1}>{renderNested(el, { ...style, inside: 'quote' }, block.blocks, inner, key, copy, fold, tip, room && rtl ? { ...room, open: false } : room)}</Box>
+  if (rtl) {
     return (
       <Box key={key} flexDirection="row" justifyContent="flex-end" alignItems="stretch">
         {body}
@@ -651,14 +658,17 @@ const renderAlert = (el: ElementTable, style: Style, block: Extract<Block, { kin
   return (
     <Box key={key} flexDirection="column" alignSelf={rtl ? 'flex-end' : 'flex-start'} {...(rtl ? { alignItems: 'flex-end' as const } : {})} borderStyle="round" borderColor={color} paddingX={1}>
       <Text bold color={color}>{block.level[0]!.toUpperCase() + block.level.slice(1)}</Text>
-      {block.blocks.length ? <Box flexDirection="column" rowGap={1}>{renderNested(el, { ...style, inside: 'alert' }, block.blocks, inner, key, copy, fold, tip)}</Box> : null}
+      {block.blocks.length ? <Box flexDirection="column" rowGap={1}>{renderNested(el, { ...style, inside: 'alert' }, block.blocks, inner, key, copy, fold, tip, { open: false, gap: true })}</Box> : null}
     </Box>
   )
 }
 
 const TASK_GLYPHS = { checks: ['[ ]', '[✓]'], ticks: ['○', '✓'], box: ['□', '✓'], progress: ['○', '✓'] } as const
 
-const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'list' }>, columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip) => {
+const glyphOf = (style: Style, item: Extract<Block, { kind: 'list' }>['items'][number]): string =>
+  item.task !== undefined ? TASK_GLYPHS[style.taskStyle][item.task ? 1 : 0] : /\d/.test(item.marker) ? item.marker : item.depth ? '◦' : '•'
+
+const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'list' }>, columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip, open = true) => {
   const { Box, Text } = el
   const t = style.theme
   const tasks = block.items.filter(item => item.task !== undefined)
@@ -677,7 +687,7 @@ const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind
       )}
       {block.items.map((item, i) => {
         const k = `${key}.${i}`
-        const glyph = item.task !== undefined ? TASK_GLYPHS[style.taskStyle][item.task ? 1 : 0] : /\d/.test(item.marker) ? item.marker : item.depth ? '◦' : '•'
+        const glyph = glyphOf(style, item)
         const glyphColor = item.task && tick ? t.accent : t.bullet
         const pad = item.depth * 2 + glyph.length + 1
         const rtl = flowOf(style, item.inline, columns - pad)
@@ -696,7 +706,7 @@ const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind
         return (
           <Box key={k} flexDirection="column">
             {row}
-            <Box flexDirection="column" paddingLeft={pad}>{renderNested(el, style, item.blocks, columns - pad, k, copy, fold, tip)}</Box>
+            <Box flexDirection="column" paddingLeft={pad}>{renderNested(el, style, item.blocks, columns - pad, k, copy, fold, tip, { open, gap: false })}</Box>
           </Box>
         )
       })}
@@ -762,18 +772,199 @@ const opensWithCopy = (block: Block): boolean =>
 const holdsOnlyEmptyCode = (block: Block): boolean =>
   block.kind === 'quote' && block.blocks.length === 1 && ((block.blocks[0]!.kind === 'code' && block.blocks[0]!.lines.length === 0) || holdsOnlyEmptyCode(block.blocks[0]!))
 
-export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], columns: number, drawn: Drawn = new Map(), copy?: CopyButton, fold?: Fold, tip?: Tip): RenderElement[] => {
+const closesWithCopy = (block: Block): boolean => {
+  const inner = block.kind === 'quote' ? block.blocks.at(-1) : block.kind === 'list' ? block.items.at(-1)?.blocks?.at(-1) : undefined
+  return inner !== undefined && inner.kind !== 'paragraph' && inner.kind !== 'heading' && inner.kind !== 'rule' && inner.kind !== 'notes'
+}
+
+const FULL = Infinity
+
+type Span = { lo: number; hi: number }
+type Slot = { clear: number }
+type Place = { top?: number; bottom?: number; left?: number; right?: number; paddingLeft?: number; justifyContent?: 'flex-end' }
+type Shape = { span: Span; head: number; first?: number; last?: number }
+export type Room = { open: boolean; gap: boolean; full?: boolean; above?: Slot; below?: Slot; reply?: RenderElement | null }
+
+const exactly = (w: number): Span => ({ lo: w, hi: w })
+
+const widest = (spans: Span[]): Span => spans.reduce((a, s) => ({ lo: Math.max(a.lo, s.lo), hi: Math.max(a.hi, s.hi) }), exactly(0))
+
+const moved = (s: Span, by: number): Span => ({ lo: s.lo + by, hi: s.hi + by })
+
+const textSpan = (text: string, cols: number): Span => {
+  const w = width(text)
+  return w <= cols ? exactly(w) : { lo: Math.max(0, cols - longestWord(text) - 1), hi: FULL }
+}
+
+const oneLine = (text: string, cols: number): number => (width(text) <= cols ? width(text) : FULL)
+
+const flowsRight = (style: Style, inline: Inline[], cols: number): boolean => flowOf(style, inline, cols)?.base === 'R'
+
+const codeHeader = (block: Extract<Block, { kind: 'code' }>): string => `── ${block.lang || 'code'}`
+
+const progressWidth = (style: Style, block: Extract<Block, { kind: 'list' }>): number | undefined => {
+  const tasks = block.items.filter(item => item.task !== undefined)
+  return style.taskStyle === 'progress' && tasks.length > 0 ? 20 + width(` ${tasks.filter(item => item.task).length}/${tasks.length} done`) : undefined
+}
+
+const codeShape = (block: Extract<Block, { kind: 'code' }>, cols: number, shown: number, toggle?: string, note?: string): Shape => {
+  const gutter = block.lines.length < NUMBER_AT || block.lines.length > NUMBER_MAX ? 0 : String(block.lines.length).length + 2
+  const rows = block.lines.slice(0, shown).map(line => (/[\u0000-\u001f\u007f]/.test(line) ? FULL : 2 + gutter + width(line)))
+  if (toggle !== undefined) rows.push(2 + width(`[ ${toggle} ]`))
+  const parts = [width(codeHeader(block)), ...(note ? [width(note)] : []), ...rows]
+  const hi = Math.max(...parts)
+  const lo = Math.min(cols, Math.max(...parts.map(w => (w === FULL ? 0 : w))))
+  const end = rows.at(-1)
+  return { span: hi <= cols ? exactly(hi) : { lo, hi: FULL }, head: note ? 1 : 0, first: width(codeHeader(block)), last: end === undefined || end > cols ? undefined : end }
+}
+
+const artShape = (art: string, cols: number): Shape => {
+  const rows = art.split('\n')
+  const w = Math.max(...rows.map(row => 2 + width(row)))
+  const row = (text: string) => (w <= cols ? 2 + width(text.trimEnd()) : FULL)
+  return { span: w <= cols ? exactly(w) : { lo: cols, hi: FULL }, head: 0, first: row(rows[0]!), last: rows.length > 1 ? row(rows.at(-1)!) : undefined }
+}
+
+const headingSpan = (style: Style, block: Extract<Block, { kind: 'heading' }>, cols: number): Span => {
+  const label = inlineText(block.inline)
+  const banner = style.headingStyle === 'banner' && block.level === 1
+  const w = width(style.headingStyle === 'uppercase' && block.level === 1 ? label.toUpperCase() : label) + (banner ? 4 : 0)
+  return w <= cols ? exactly(w) : { lo: 0, hi: FULL }
+}
+
+const hoverNeed = (style: Style, block: Block): number => {
+  if (style.copyButtonStyle !== 'hover' || !style.copyButtons) return 0
+  if (block.kind === 'code') return width('[ ⧉ copy ]')
+  if (block.kind === 'table') return width('[ ⧉ md ] [ ⧉ art ]') + (style.htmlCopy ? width(' [ ⧉ html ]') : 0)
+  return holdsOnlyEmptyCode(block) || copySource(style, block) === undefined ? 0 : width('[ ⧉ copy ]')
+}
+
+const boxed = (style: Style, block: Block, cols: number): Span => {
+  const span = spanOf(style, block, cols)
+  const need = hoverNeed(style, block)
+  return { lo: Math.max(span.lo, need), hi: Math.max(span.hi, need) }
+}
+
+const spanOf = (style: Style, raw: Block, cols: number): Span => {
+  const block = drawable(raw, style.httpLinks, style.editorLinks)
+  switch (block.kind) {
+    case 'paragraph':
+      return textSpan(inlineText(block.inline), cols)
+    case 'heading':
+      return headingSpan(style, block, cols)
+    case 'list': {
+      const progress = progressWidth(style, block)
+      return widest([...(progress === undefined ? [] : [exactly(progress)]), ...block.items.map(item => {
+        const pad = item.depth * 2 + glyphOf(style, item).length + 1
+        return moved(widest([textSpan(inlineText(item.inline), cols - pad), ...(item.blocks ?? []).map(inner => boxed(style, inner, cols - pad))]), pad)
+      })])
+    }
+    case 'quote':
+      return moved(widest(block.blocks.map(inner => boxed({ ...style, inside: 'quote' }, inner, cols - 2))), 2)
+    case 'alert':
+      return moved(widest([exactly(width(block.level)), ...block.blocks.map(inner => boxed({ ...style, inside: 'alert' }, inner, cols - 4))]), 4)
+    case 'table':
+      return exactly(tableLayout(style, block, cols).width)
+    case 'code': {
+      if (mathOf(block) !== null) return { lo: 0, hi: FULL }
+      if (block.lines.length <= FOLD_AT) return codeShape(block, cols, block.lines.length).span
+      const folded = codeShape(block, cols, FOLD_SHOW, `+${block.lines.length - FOLD_SHOW} more lines`).span
+      return { lo: folded.lo, hi: Math.max(folded.hi, codeShape(block, cols, block.lines.length, 'show less').span.hi) }
+    }
+    case 'rule':
+      return exactly(Math.max(8, Math.min(cols, 80)))
+    case 'notes':
+      return { lo: 0, hi: FULL }
+  }
+}
+
+const edgeRow = (style: Style, raw: Block, cols: number, last: boolean): number => {
+  const block = drawable(raw, style.httpLinks, style.editorLinks)
+  switch (block.kind) {
+    case 'paragraph':
+      return flowsRight(style, block.inline, cols) ? FULL : oneLine(inlineText(block.inline), cols)
+    case 'heading':
+      return flowsRight(style, block.inline, Infinity) ? FULL : headingSpan(style, block, cols).hi
+    case 'list': {
+      const progress = progressWidth(style, block)
+      if (!last && progress !== undefined) return progress
+      const item = last ? block.items.at(-1) : block.items[0]
+      if (!item) return 0
+      const pad = item.depth * 2 + glyphOf(style, item).length + 1
+      if (last && item.blocks?.length) return pad + edgeRow(style, item.blocks.at(-1)!, cols - pad, true)
+      return flowsRight(style, item.inline, cols - pad) ? FULL : pad + oneLine(inlineText(item.inline), cols - pad)
+    }
+    case 'quote': {
+      if (flowsRight(style, leadInline(block.blocks), cols - 2)) return FULL
+      const inner = last ? block.blocks.at(-1) : block.blocks[0]
+      return inner ? 2 + edgeRow(style, inner, cols - 2, last) : 2
+    }
+    case 'alert':
+      return spanOf(style, block, cols).hi
+    case 'table':
+      return style.reorder && isRtlTable(style, block) ? FULL : tableLayout(style, block, cols).width
+    case 'code':
+      return last || mathOf(block) !== null ? FULL : width(codeHeader(block))
+    case 'rule':
+      return Math.max(8, Math.min(cols, 80))
+    case 'notes':
+      return FULL
+  }
+}
+
+const rightReach = (style: Style, raw: Block, cols: number): number => {
+  const block = drawable(raw, style.httpLinks, style.editorLinks)
+  const lines = (inline: Inline[], w: number) => {
+    const flowed = flowOf(style, inline, w)
+    return flowed?.base === 'R' ? Math.max(0, ...flowed.lines.map(line => width(inlineText(line)))) : FULL
+  }
+  switch (block.kind) {
+    case 'table':
+      return tableLayout(style, block, cols).width
+    case 'paragraph':
+      return lines(block.inline, cols)
+    case 'list':
+      return progressWidth(style, block) !== undefined ? FULL : Math.max(0, ...block.items.map(item => {
+        const pad = item.depth * 2 + glyphOf(style, item).length + 1
+        return item.blocks?.length ? FULL : pad + lines(item.inline, cols - pad)
+      }))
+    case 'quote':
+      return 2 + Math.max(0, ...block.blocks.map(inner => rightReach(style, inner, cols - 2)))
+    case 'alert':
+      return spanOf(style, block, cols).hi
+    default:
+      return FULL
+  }
+}
+
+type Fit = Shape & { need: number; cols: number; open: boolean; figure: boolean; leading: boolean; start: boolean; above?: Slot; below?: Slot }
+
+const placeButtons = (f: Fit): Place | null => {
+  const onRow = (at: Place, content: number | undefined): Place | null => {
+    if (content === undefined) return null
+    if (f.start) return !f.figure && content + 1 + f.need <= f.cols ? { ...at, left: 0 } : null
+    if (f.span.lo - f.need >= content + 1) return { ...at, right: 0 }
+    return f.open && !f.figure && content + 1 + f.need <= f.cols ? { ...at, left: content, paddingLeft: 1 } : null
+  }
+  const inGap = (at: Place, slot: Slot | undefined): Place | null => {
+    if (!slot) return null
+    if (f.start) return slot.clear === 0 || (!f.figure && f.need <= f.cols - slot.clear) ? { ...at, left: 0, right: slot.clear } : null
+    const by = slot.clear === 0 ? 0 : (f.figure && !f.leading) || f.span.hi === FULL ? slot.clear : Math.max(0, f.span.hi - (f.cols - slot.clear))
+    return f.span.lo - by >= f.need ? { ...at, left: 0, right: by, justifyContent: 'flex-end' } : null
+  }
+  return onRow({ top: f.head }, f.first) ?? onRow({ bottom: 0 }, f.last) ?? inGap({ bottom: -1 }, f.below) ?? inGap({ top: -1 }, f.above)
+}
+
+export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], columns: number, drawn: Drawn = new Map(), copy?: CopyButton, fold?: Fold, tip?: Tip, room: Room = { open: true, gap: true, full: true }): RenderElement[] => {
   const { Box, Text } = el
   const t = style.theme
   const hover = style.copyButtonStyle === 'hover'
   const reserved = (buttons: (RenderElement | null | undefined)[]): number =>
     buttons.reduce<number>((w, button) => (button?.type === 'Button' ? w + (w ? 1 : 0) + width(`[ ${button.props.label} ]`) : w), 0)
-  const floating = (button: RenderElement | null | undefined, parts: (RenderElement | null | undefined)[], low = false, start = false) => (button ? {
-    minWidth: reserved(parts),
-    element: <Box position="absolute" {...(low ? { bottom: 0 } : { top: 0 })} {...(start ? { left: 0 } : { right: 0 })} display="none" hover={{ display: 'flex' }}>{button}</Box>,
-  } : null)
+  const float = (at: Place, button: RenderElement) => <Box position="absolute" {...at} display="none" hover={{ display: 'flex' }}>{button}</Box>
   const shown = blocks.map(block => drawable(block, style.httpLinks, style.editorLinks))
   const rtlTables = shown.map(block => style.reorder && block.kind === 'table' && isRtlTable(style, block))
+  const toggles = blocks.map((block, b) => (block.kind === 'code' && !drawn.get(b)?.element && block.lines.length > FOLD_AT ? fold?.(codeId(block.lines), block.lines.length - FOLD_SHOW, `fold${b}`) ?? null : null))
   const buttons = blocks.map((block, b) => {
     const text = hover && holdsOnlyEmptyCode(block) ? undefined : copySource(style, block)
     const isPlainCode = block.kind === 'code' && !drawn.get(b)?.element
@@ -781,8 +972,82 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
     const first = text === undefined || isPlainCode ? null : copy?.(text, `copy${b}`, block.kind === 'table' ? '⧉ md' : art === undefined ? undefined : '⧉ source')
     const second = first && art !== undefined ? copy?.(art, `art${b}`, '⧉ art') : null
     const html = first && block.kind === 'table' ? copy?.(() => tableText(block), `html${b}`, '⧉ html', () => tableHtml(block)) : null
-    return { first, second, html }
+    const code = block.kind === 'code' && isPlainCode ? copy?.(block.lines.join('\n'), `copy${b}`) ?? null : null
+    return { first, second, html, code }
   })
+  const starts = blocks.map((block, b) => {
+    const wide = style.reorder && hasRtl(block.raw) && (block.kind === 'list' || block.kind === 'quote' || block.kind === 'alert' || rtlTables[b])
+    return !!wide && (rtlTables[b] || flowOf(style, leadInline([block]), columns)?.base === 'R')
+  })
+  const isFigure = (b: number) => blocks[b]?.kind === 'table' || drawn.get(b)?.art !== undefined
+  const groups: number[][] = []
+  for (let b = 0; b < blocks.length; b++) {
+    if (b > 0 && isFigure(b) && isFigure(b - 1)) groups.at(-1)!.push(b)
+    else groups.push([b])
+  }
+  const groupOf = blocks.map((_, b) => groups.findIndex(group => group.includes(b)))
+  const reply = hover && room.reply ? room.reply : null
+  const replyWidth = reserved([reply])
+  const lineOf = (g: number): number => {
+    const block = groups[g]!.length === 1 ? shown[groups[g]![0]!] : undefined
+    return block?.kind === 'paragraph' && !(style.reorder && hasRtl(block.raw)) ? oneLine(inlineText(block.inline), columns) : FULL
+  }
+  const besideLine = (g: number) => reply !== null && lineOf(g) + 1 + replyWidth <= columns
+  const replyBeside = groups.length > 0 && besideLine(groups.length - 1)
+  const slotsFor = (above: boolean) => ({
+    above: (g: number): Slot | undefined => (g === 0 ? room.above : room.gap ? { clear: above && g === groups.length - 1 ? replyWidth + 1 : 0 } : undefined),
+    below: (g: number): Slot | undefined => (g === groups.length - 1 ? room.below : room.gap ? { clear: above && g === groups.length - 2 ? replyWidth + 1 : 0 } : undefined),
+  })
+  const shapeOf = (b: number): Shape => {
+    const block = shown[b]!
+    const art = drawn.get(b)?.art
+    if (block.kind === 'code' && drawn.get(b)?.element) return art === undefined ? { span: { lo: 0, hi: FULL }, head: 0 } : artShape(art, columns)
+    if (block.kind === 'code') {
+      const toggle = toggles[b]
+      const label = toggle?.element.type === 'Button' ? String(toggle.element.props.label) : undefined
+      return codeShape(block, columns, toggle?.folded ? FOLD_SHOW : block.lines.length, label, drawn.get(b)?.note)
+    }
+    if (starts[b]) {
+      const reach = rightReach(style, block, columns)
+      return { span: { lo: columns, hi: FULL }, head: 0, first: opensWithCopy(block) ? undefined : reach, last: closesWithCopy(block) ? undefined : reach }
+    }
+    return { span: spanOf(style, block, columns), head: 0, first: opensWithCopy(block) ? undefined : edgeRow(style, block, columns, false), last: closesWithCopy(block) ? undefined : edgeRow(style, block, columns, true) }
+  }
+  const needs = buttons.map(({ first, second, html, code }) => reserved(code ? [code] : [first, second, html]))
+  const placesFor = (slots: ReturnType<typeof slotsFor>) => {
+    const out: (Place | null)[] = blocks.map(() => null)
+    groups.forEach((group, g) => {
+      const taken = g > 0 && groups[g - 1]!.some(b => out[b]?.bottom === -1)
+      for (const b of group) {
+        const need = needs[b]!
+        if (!hover || !need) continue
+        const shape = shapeOf(b)
+        const span = starts[b] ? shape.span : { lo: Math.max(shape.span.lo, need), hi: Math.max(shape.span.hi, need) }
+        out[b] = placeButtons({ ...shape, span, need, cols: columns, open: room.open, figure: group.length > 1, leading: group[0] === b, start: starts[b]!, above: taken ? undefined : slots.above(g), below: slots.below(g) })
+      }
+    })
+    return out
+  }
+  const placed = (list: (Place | null)[]) => list.filter(Boolean).length
+  const free = placesFor(slotsFor(false))
+  const shared = reply !== null && !replyBeside && groups.length > 1 && replyWidth < columns ? placesFor(slotsFor(true)) : null
+  const replyAbove = shared !== null && placed(shared) === placed(free)
+  const { above: slotAbove, below: slotBelow } = slotsFor(replyAbove)
+  const places = replyAbove ? shared! : free
+  const usesRow = (g: number, side: 'top' | 'bottom') => !!groups[g]?.some(b => places[b]?.[side] === -1)
+  const nested = (b: number): Room => {
+    const g = groupOf[b]!
+    return {
+      open: room.open,
+      gap: true,
+      above: places[b]?.top === -1 || usesRow(g - 1, 'bottom') ? undefined : slotAbove(g),
+      below: places[b]?.bottom === -1 || usesRow(g + 1, 'top') ? undefined : slotBelow(g),
+    }
+  }
+  const host = (b: number) => {
+    const at = places[b]
+    return !room.full || !at?.paddingLeft || at.left === undefined ? needs[b]! : Math.max(needs[b]!, at.left + at.paddingLeft + needs[b]!)
+  }
   const beside = (b: number) => (hover || !buttons[b]!.first ? columns : columns - reserved([buttons[b]!.first]) - 2)
   const rendered = shown.map((block, b) => {
     const key = `b${b}`
@@ -792,7 +1057,7 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
       case 'paragraph':
         return drawn.get(b)?.element ?? renderParagraph(el, style, block, columns, key, tip)
       case 'quote':
-        return renderQuote(el, style, block, beside(b), key, copy, fold, tip)
+        return renderQuote(el, style, block, beside(b), key, copy, fold, tip, nested(b))
       case 'alert':
         return renderAlert(el, style, block, beside(b), key, copy, fold, tip)
       case 'rule':
@@ -802,30 +1067,31 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
         if (done) return done
         const note = drawn.get(b)?.note
         const lines = block.lines
-        const toggle = lines.length > FOLD_AT ? fold?.(codeId(lines), lines.length - FOLD_SHOW, `fold${b}`) : null
+        const toggle = toggles[b]
         const shown = toggle?.folded ? FOLD_SHOW : lines.length
         const numbered = lines.length >= NUMBER_AT && lines.length <= NUMBER_MAX
         const rows = style.nativeCode ? [<el.Code key="code" source={lines.slice(0, shown).join('\n') || ' '} {...(block.lang ? { language: block.lang } : {})} {...(numbered ? { startLine: 1 } : {})} />]
           : (isShellLang(block.lang) ? null : highlightBlock(el, style, lines, block.lang, key))?.slice(0, shown) ?? lines.slice(0, shown).map((line, i) => codeLine(el, style, line, block.lang, `${key}.${i}`))
         const gutter = String(lines.length).length
-        const button = copy?.(lines.join('\n'), `copy${b}`) ?? null
-        const float = hover ? floating(button, [button]) : null
+        const button = buttons[b]!.code
+        const at = places[b]
         return (
-          <Box key={key} flexDirection="column" alignSelf="flex-start" minWidth={float?.minWidth}>
+          <Box key={key} flexDirection="column" alignSelf="flex-start" minWidth={hover && button ? host(b) : undefined}>
             {note ? <Text color={t.codeComment}>{note}</Text> : null}
             <Box flexDirection="row" justifyContent="space-between" columnGap={4}>
-              <Text color={t.codeComment}>{`── ${block.lang || 'code'}`}</Text>
-              {float ? float.element : button}
+              <Text color={t.codeComment}>{codeHeader(block)}</Text>
+              {hover ? null : button}
             </Box>
             <Box flexDirection="column" paddingLeft={2}>
               {!numbered || style.nativeCode ? rows : rows.map((row, i) => row.type === 'Text' ? <Box key={`n${i}`} flexDirection="row"><Text color={t.codeComment} dimColor>{`${String(i + 1).padStart(gutter)}  `}</Text>{row}</Box> : row)}
               {toggle?.element ?? null}
             </Box>
+            {at && button ? float(at, button) : null}
           </Box>
         )
       }
       case 'list':
-        return renderList(el, style, block, columns, key, copy, fold, tip)
+        return renderList(el, style, block, columns, key, copy, fold, tip, room.open)
       case 'table':
         return renderTable(el, style, block, columns, key, rtlTables[b]!, tip)
       case 'notes':
@@ -851,13 +1117,11 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
     const { Box } = el
     const rtl = style.reorder && hasRtl(block.raw)
     if (hover) {
-      const wide = rtl && (block.kind === 'list' || block.kind === 'quote' || block.kind === 'alert' || rtlTables[b])
-      const start = wide && (rtlTables[b] || flowOf(style, leadInline([block]), columns)?.base === 'R')
-      const float = floating(button, second ? [first, second, html] : [first], opensWithCopy(block), start)!
+      const at = places[b]
       return (
-        <Box key={`c${b}`} flexDirection="column" minWidth={float.minWidth} {...(start ? {} : { alignSelf: 'flex-start' as const })}>
+        <Box key={`c${b}`} flexDirection="column" minWidth={host(b)} {...(starts[b] ? {} : { alignSelf: 'flex-start' as const })}>
           {element}
-          {float.element}
+          {at ? float(at, button) : null}
         </Box>
       )
     }
@@ -873,21 +1137,14 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
       </Box>
     )
   })
-  const isFigure = (b: number) => blocks[b]?.kind === 'table' || drawn.get(b)?.art !== undefined
-  const out: RenderElement[] = []
-  for (let b = 0; b < rendered.length; b++) {
-    if (!isFigure(b) || !isFigure(b + 1)) {
-      out.push(copied[b]!)
-      continue
-    }
-    const start = b
-    while (isFigure(b + 1)) b++
-    out.push(
-      <Box key={`row${start}`} flexDirection="row" flexWrap="wrap" columnGap={4} rowGap={1}>
-        {copied.slice(start, b + 1).map((figure, i) => <Box key={`f${start + i}`} flexShrink={0}>{figure}</Box>)}
-      </Box>,
-    )
-  }
+  const out = groups.map(group => (group.length === 1 ? copied[group[0]!]! : (
+    <Box key={`row${group[0]}`} flexDirection="row" flexWrap="wrap" columnGap={4} rowGap={1}>
+      {group.map(b => <Box key={`f${b}`} flexShrink={0}>{copied[b]}</Box>)}
+    </Box>
+  )))
+  const line = reply === null || replyAbove ? -1 : groups.map((_, g) => g).reverse().find(besideLine) ?? -1
+  if (reply && replyAbove) out[out.length - 1] = <Box flexDirection="column">{out.at(-1)}{float({ top: -1, right: 0 }, reply)}</Box>
+  if (reply && line >= 0) out[line] = <Box flexDirection="column">{out[line]}{float({ top: 0, left: lineOf(line) + 1 }, reply)}</Box>
   return out
 }
 
