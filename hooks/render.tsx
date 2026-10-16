@@ -1368,14 +1368,15 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
       </Text>
       {shown.flatMap((r, i) => {
         const bg = tints[r.mark]
-        return visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => (
+        const gap = i > 0 && r.hunk !== shown[i - 1]!.hunk ? [<Text key={`gap${i}`} dimColor>{look === 'bar' ? '  ...' : '...'}</Text>] : []
+        return [...gap, ...visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => (
           <Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
             {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' || r.mark === '\\' ? '  ' : '▌ '}</Text> : null}
             <Text dimColor>{`${k || r.mark === '\\' ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `}</Text>
             <Text color={color(r.mark)} dimColor={r.mark === ' '}>{r.mark === '\\' ? '  ' : `${r.mark} `}</Text>
             <Text color={t.codeText}>{drawCode(el, style, part, bg, words[r.mark], `d${i}.${k}`)}</Text>
           </Box>
-        ))
+        ))]
       })}
       {rows.length > shown.length && toggle?.folded !== true ? <Text dimColor>{`… +${rows.length - shown.length} lines`}</Text> : null}
       {toggle?.element ?? null}

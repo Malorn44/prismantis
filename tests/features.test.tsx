@@ -1137,6 +1137,37 @@ for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
   })
 }
 
+const twoHunks = [
+  { oldStart: 4, newStart: 4, oldLines: 3, newLines: 3, lines: [' const a = 3', '-const b = 4', '+const b = 5', ' const c = 6'] },
+  { oldStart: 50, newStart: 50, oldLines: 3, newLines: 3, lines: [' const x = 50', '-const y = 51', '+const y = 52', ' const z = 52'] },
+]
+
+for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
+  test(`diffStyle ${diffStyle} parts separate hunks with a dim ... row, in edit and shell edit cards`, { options: { diffStyle } }, async ($, on) => {
+    engine(on)
+    const bash = { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/tmp/far.ts', hunks: twoHunks }], moreFiles: 0 } }
+    for (const surface of ['terminal', 'desktop'] as const) {
+      for (const [tool, output] of [['Edit', { filePath: '/tmp/far.ts', structuredPatch: twoHunks }], ['Bash', bash]] as const) {
+        const ui = await $.ui.mount(editResult(surface, tool, output))
+        const drawn = (await ui.findAll({})).filter(n => /^d\d+$/.test(n.key ?? '') || (n.type === 'Text' && /^ *\.\.\.$/.test(n.text)))
+        expect(drawn.map(n => n.key ?? n.text)).toEqual(['d0', 'd1', 'd2', 'd3', diffStyle === 'bar' ? '  ...' : '...', 'd4', 'd5', 'd6', 'd7'])
+        expect(drawn[4]!.props).toEqual({ dimColor: true })
+        expect(drawn[5]!.text).toMatch(/^(  )?50   const x = 50$/)
+        await ui.unmount()
+      }
+    }
+  })
+}
+
+test('one hunk draws no separator', async ($, on) => {
+  engine(on)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(editResult(surface, 'Edit', patch))
+    expect((await ui.findAll({ type: 'Text', text: /^ *\.\.\.$/ })).length).toBe(0)
+    await ui.unmount()
+  }
+})
+
 const noNewline = { filePath: '/tmp/version.py', structuredPatch: [{ oldStart: 1, newStart: 1, lines: [' NAME = "tank"', '-VERSION = "1.0"', '\\ No newline at end of file', '+VERSION = "1.1"', '\\ No newline at end of file'] }] }
 
 test('a diff keeps the no-newline marker as a row of its own that numbers nothing', () => {
