@@ -1486,11 +1486,7 @@ const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fo
     </Text>
   )
   const closed = created ? PREVIEW_LINES : 0
-  const toggle = n > closed
-    ? fold(id, n - closed, `fold${key}`, created
-      ? { face: folded => <Text dimColor>{folded ? `… +${n - closed} lines` : 'show less'}</Text> }
-      : { label: `show ${lineCount(n)}`, face: () => head })
-    : null
+  const toggle = n > closed ? fold(id, n - closed, `fold${key}`, created ? undefined : { label: `show ${lineCount(n)}`, face: () => head }) : null
   const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : closed)
   const lines = file.lines.slice(0, shown)
   const press = !marked && style.pressPreview === true ? toggle?.around : undefined
