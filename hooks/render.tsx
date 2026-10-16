@@ -137,6 +137,18 @@ const pathHref = (reach: Reach, path: string): string | undefined => {
   return `${reach.fileLinks}${encodeURI(target).replace(/[?#]/g, encodeURIComponent)}`
 }
 
+const toolHref = (reach: Reach, path: string): string | undefined =>
+  reach.pathLinks ? pathHref(reach, /^([/~.]|[a-z]:[\\/])/i.test(path) ? path.replace(/\\/g, '/') : `./${path}`) : undefined
+
+type Piece = { text: string; path?: string }
+
+const pieceText = (pieces: Piece[]): string => pieces.map(p => p.text).join('')
+
+const drawPieces = (el: ElementTable, style: Style, pieces: Piece[]): string | (string | RenderElement)[] => {
+  const hrefs = pieces.map(p => (p.path === undefined ? undefined : toolHref(style, p.path)))
+  return hrefs.some(Boolean) ? pieces.map((p, i) => { const href = hrefs[i]; return href ? <el.Link key={`p${i}`} href={href} label={p.text} /> : p.text }) : pieceText(pieces)
+}
+
 const hyperlinks = (nodes: Inline[], reach: Reach): Inline[] =>
   nodes.map(node => {
     const n: Inline = node.kind === 'image' && isWebLink(node.src) ? { kind: 'link', text: node.text, href: node.src } : node
@@ -990,10 +1002,10 @@ export const shortTarget = (places: Places, path: string): string => (sameDir(pl
 
 const PATH_FIELDS = ['file_path', 'notebook_path', 'path']
 
-const targetOf = (style: Style, input: unknown, fields: string[]): { target?: string; isPathField: boolean } => {
+const targetOf = (style: Style, input: unknown, fields: string[]): { target?: string; path?: string } => {
   const target = field(input, ...fields)
-  const isPathField = target !== undefined && PATH_FIELDS.some(k => field(input, k) === target)
-  return { target: isPathField ? shortPath(style, target!) : target, isPathField }
+  const path = target !== undefined && PATH_FIELDS.some(k => field(input, k) === target) ? target : undefined
+  return { target: path === undefined ? target : shortPath(style, path), path }
 }
 
 const RESULT_LINES = 3
@@ -1087,7 +1099,7 @@ export const diffLines = (output: unknown): DiffLine[] | undefined => {
   return rows
 }
 
-const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, title?: string): RenderElement => {
+const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, title?: string, path?: string): RenderElement => {
   const { Box, Text } = el
   const t = style.theme
   const added = rows.filter(r => r.mark === '+').length
@@ -1104,7 +1116,7 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
       <Text>
-        {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
+        {title === undefined ? null : <Text color={t.path}>{drawPieces(el, style, [{ text: title, path }, { text: ' ' }])}</Text>}
         <Text color={addColor} dimColor={added === 0}>{`+${added}`}</Text>
         <Text> </Text>
         <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
@@ -1175,7 +1187,7 @@ export const hasShellOutput = (output: unknown): boolean => {
 }
 
 export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = []): RenderElement => {
-  const cards = edits.files.map((file, i) => diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), shortPath(style, file.path)))
+  const cards = edits.files.map((file, i) => diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), shortPath(style, file.path), file.path))
   const more = edits.more ? [<el.Text key="more" dimColor>{`… +${edits.more} more ${edits.more === 1 ? 'file' : 'files'}`}</el.Text>] : []
   const said = notes.map((note, i) => <el.Text key={`note${i}`} dimColor>{`(${note})`}</el.Text>)
   return diffRow(el, style, [...cards, ...more, ...said], below)
@@ -1239,36 +1251,38 @@ export const renderFailure = (el: ElementTable, style: Style, output: unknown, k
   )
 }
 
-const callLabel = (call: ToolRow, style: Style): string => {
+const callPieces = (call: ToolRow, style: Style): Piece[] => {
   const isShell = call.tool === 'Bash' || call.tool === 'PowerShell'
   if (isShell) {
     const command = field(call.input, 'command') ?? ''
     const plain = call.tool === 'Bash' ? describeShell(command, style) : undefined
-    if (plain) return plain
+    if (plain) return [{ text: plain }]
     const description = field(call.input, 'description')
-    if (description === undefined) return `Ran ${shortenPaths(command.split('\n')[0]!, style)}`
+    if (description === undefined) return [{ text: `Ran ${shortenPaths(command.split('\n')[0]!, style)}` }]
     const programs = call.tool === 'Bash' ? programsOf(command) : []
-    return programs.length ? `${description} · ${programs.join(', ')}` : description
+    return [{ text: programs.length ? `${description} · ${programs.join(', ')}` : description }]
   }
   if (call.tool === 'Grep') {
     const pattern = field(call.input, 'pattern')
     const path = field(call.input, 'path')
-    if (pattern !== undefined) return `Searched ${path === undefined ? '.' : shortTarget(style, path)} for "${pattern}"`
+    if (pattern !== undefined) return path === undefined ? [{ text: `Searched . for "${pattern}"` }] : [{ text: 'Searched ' }, { text: shortTarget(style, path), path }, { text: ` for "${pattern}"` }]
   }
   const verb = call.tool === 'Skill' ? 'Loaded skill' : VERBS[call.tool] ?? call.tool.replace(/^mcp__([^_]+)__/, '$1 ')
   const target = field(call.input, 'skill', ...TARGET_FIELDS)
   const args = call.tool === 'Skill' ? field(call.input, 'args') : undefined
-  return target === undefined ? verb : `${verb} ${shortTarget(style, target)}${args ? ` ${args}` : ''}`
+  if (target === undefined) return [{ text: verb }]
+  const path = PATH_FIELDS.some(k => field(call.input, k) === target) ? target : undefined
+  return [{ text: `${verb} ` }, { text: shortTarget(style, target), path }, ...(args ? [{ text: ` ${args}` }] : [])]
 }
 
 const quietToolRow = (el: ElementTable, style: Style, row: ToolRow, columns: number): RenderElement => {
   const t = style.theme
   const dot = statusColor(t, row)
-  const what = callLabel(row, style)
-  const label = `${what}${row.isInterrupted ? ' interrupted' : row.isErrored ? ' failed' : ''}`
+  const pieces = callPieces(row, style)
+  const label = `${pieceText(pieces)}${row.isInterrupted ? ' interrupted' : row.isErrored ? ' failed' : ''}`
   return toolLayout(el, style, columns, label, dot, row.isRunning, (
     <el.Text wrap="truncate-end" dimColor={toolDim(style)}>
-      {what}
+      {drawPieces(el, style, pieces)}
       {row.isInterrupted ? <el.Text dimColor> interrupted</el.Text> : row.isErrored ? <el.Text color={t.codeFlag}> failed</el.Text> : null}
     </el.Text>
   ))
@@ -1280,17 +1294,17 @@ export const renderToolRow = (el: ElementTable, style: Style, row: ToolRow, colu
   const t = style.theme
   const isShell = row.tool === 'Bash' || row.tool === 'PowerShell'
   const verb = VERBS[row.tool] ?? row.tool.replace(/^mcp__([^_]+)__/, '$1 ')
-  const found = isShell ? { target: field(row.input, 'command')?.split('\n')[0], isPathField: false } : targetOf(style, row.input, TARGET_FIELDS)
+  const found: { target?: string; path?: string } = isShell ? { target: field(row.input, 'command')?.split('\n')[0] } : targetOf(style, row.input, TARGET_FIELDS)
   const target = found.target
   const dot = statusColor(t, row)
-  const isPath = target !== undefined && (found.isPathField || /^(~|\.{0,2}\/|[A-Za-z]:\\)/.test(target))
+  const isPath = target !== undefined && (found.path !== undefined || /^(~|\.{0,2}\/|[A-Za-z]:\\)/.test(target))
 
   const label = `${verb}${target === undefined ? "" : ` ${target}`}${row.isInterrupted ? " interrupted" : row.isErrored ? " failed" : ""}`
   return toolLayout(el, style, columns, label, dot, row.isRunning, (
       <Text wrap="truncate-end" dimColor={toolDim(style)}>
         <Text bold={!toolDim(style)} dimColor={toolDim(style)}>{verb}</Text>
         {target === undefined ? null : <Text> </Text>}
-        {target === undefined ? null : isShell ? codeLine(el, style, target, 'bash', 'cmd') : <Text color={isPath ? t.path : t.inlineCode} dimColor={toolDim(style)}>{target}</Text>}
+        {target === undefined ? null : isShell ? codeLine(el, style, target, 'bash', 'cmd') : <Text color={isPath ? t.path : t.inlineCode} dimColor={toolDim(style)}>{drawPieces(el, style, [{ text: target, path: found.path }])}</Text>}
         {row.isInterrupted ? <Text dimColor> interrupted</Text> : row.isErrored ? <Text color={t.codeFlag}> failed</Text> : null}
       </Text>
   ))
@@ -1603,13 +1617,13 @@ const quietToolGroup = (el: ElementTable, style: Style, calls: readonly (ToolRow
   const failed = calls.filter(c => c.isErrored)
   const running = isActive && calls.some(c => c.isRunning)
   const dot = failed.length ? t.codeFlag : running ? t.accent : t.number
-  const labels = calls.map(c => callLabel(c, style)).filter((l, i, all) => l !== all[i - 1])
-  const label = labels.join(' · ')
+  const labels = calls.map(c => callPieces(c, style)).filter((l, i, all) => pieceText(l) !== (i ? pieceText(all[i - 1]!) : undefined))
+  const label = labels.map(pieceText).join(' · ')
   const reasons = failed.map((c, i) => renderFailure(el, style, c.output, `r${i}`)).filter((r): r is RenderElement => r !== undefined)
   const isShell = (c: ToolRow) => c.tool === 'Bash' || c.tool === 'PowerShell'
   const results = calls.flatMap((c, i) => (c.isErrored || c.output === undefined || !isShell(c) || isReadOnlyCall(c.tool, c.input) ? [] : [<el.Box key={`o${i}`}>{renderShellResult(el, style, c.output)}</el.Box>]))
   const row = toolLayout(el, style, columns, label, dot, running, (
-    <el.Text wrap="truncate-end" dimColor={toolDim(style)}>{label}</el.Text>
+    <el.Text wrap="truncate-end" dimColor={toolDim(style)}>{drawPieces(el, style, labels.flatMap((l, i) => (i ? [{ text: ' · ' }, ...l] : l)))}</el.Text>
   ))
   if (!reasons.length && !results.length) return row
   return (
@@ -1629,14 +1643,15 @@ export const renderToolGroup = (el: ElementTable, style: Style, calls: readonly 
   const running = isActive && calls.some(c => c.isRunning)
   const dot = failed ? t.codeFlag : running ? t.accent : t.number
   const last = calls[calls.length - 1]
-  const lastTarget = last ? targetOf(style, last.input, ['command', ...TARGET_FIELDS]).target?.split('\n')[0] : undefined
+  const lastFound = last ? targetOf(style, last.input, ['command', ...TARGET_FIELDS]) : {}
+  const lastTarget = lastFound.target?.split('\n')[0]
   const summary = groupSummary(calls)
   const label = `${summary}${failed ? ` · ${failed} failed` : ""}${lastTarget ? ` · last: ${lastTarget}` : ""}`
   return toolLayout(el, style, columns, label, dot, running, (
       <Text wrap="truncate-end" dimColor={toolDim(style)}>
         <Text bold={!toolDim(style)} dimColor={toolDim(style)}>{summary}</Text>
         {failed ? <Text color={t.codeFlag}>{` · ${failed} failed`}</Text> : null}
-        {lastTarget ? <Text dimColor>{` · last: ${lastTarget}`}</Text> : null}
+        {lastTarget ? <Text dimColor>{drawPieces(el, style, [{ text: ' · last: ' }, { text: lastTarget, path: lastFound.path }])}</Text> : null}
       </Text>
   ))
 }
