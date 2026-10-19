@@ -142,10 +142,29 @@ export const drawsHyperlinks = (env: TerminalEnv): boolean => {
 
 type Reach = Pick<Style, 'httpLinks' | 'editorLinks' | 'fileLinks' | 'pathLinks' | 'cwd' | 'home'>
 
+const LAUNCHERS = new Set([
+  'app', 'command', 'tool', 'terminal', 'pkg', 'mpkg', 'mobileconfig', 'prefpane', 'workflow', 'action', 'fileloc', 'inetloc', 'webloc',
+  'exe', 'com', 'scr', 'pif', 'cpl', 'msi', 'msp', 'msu', 'msix', 'msixbundle', 'appx', 'appxbundle', 'appinstaller', 'application', 'appref-ms', 'vsix',
+  'bat', 'cmd', 'ps1', 'psc1', 'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'wsc', 'hta', 'chm', 'msc', 'reg', 'xll', 'wsb', 'diagcab', 'ahk', 'au3',
+  'lnk', 'url', 'scf', 'settingcontent-ms',
+  'desktop', 'sh', 'bash', 'zsh', 'csh', 'ksh', 'run', 'appimage', 'deb', 'rpm', 'snap', 'flatpak', 'flatpakref',
+  'jar', 'jnlp', 'py', 'pyw', 'pyz', 'pyzw', 'pyc', 'pl', 'rb', 'rbw',
+])
+
+const unescaped = (text: string): string => text.replace(/%([0-9a-f]{2})/gi, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+
+const extensionOf = (name: string): string => /\.([^.]*)$/.exec(name.replace(/[. ]+$/, ''))?.[1] ?? ''
+
+const launches = (href: string): boolean => {
+  const path = unescaped(href.replace(/[?#].*$/, '')).toLowerCase().replace(/[/\\]+$/, '')
+  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
+  return /\.app[/\\]/.test(path) || name.split(/[:\u0000-\u001f]/).some(part => LAUNCHERS.has(extensionOf(part)))
+}
+
 const isHyperlink = (href: string, reach: Reach): boolean =>
   (reach.httpLinks ? /^https?:/i : /^(https:|http:\/\/localhost(:\d+)?([/?#]|$))/i).test(href)
   || (reach.editorLinks && /^vscode(-insiders)?:\/\/file\//i.test(href))
-  || (reach.fileLinks !== null && /^file:/i.test(href))
+  || (reach.fileLinks !== null && /^file:/i.test(href) && !launches(href))
 
 const plainLink = (text: string, href: string): string => {
   const target = href.replace(/^mailto:/i, '')
@@ -182,7 +201,7 @@ const pathHref = (reach: Reach, path: string): string | undefined => {
   const target = absolutePath(reach, path)
   if (target === undefined || reach.fileLinks === null) return undefined
   const href = `${reach.fileLinks}${encodeURI(target).replace(/[?#]/g, encodeURIComponent)}`
-  return href.length <= LINK_MAX ? href : undefined
+  return href.length <= LINK_MAX && !launches(href) ? href : undefined
 }
 
 const toolHref = (reach: Reach, path: string): string | undefined => {
@@ -191,7 +210,7 @@ const toolHref = (reach: Reach, path: string): string | undefined => {
   if (/^[a-z]:\//i.test(forward)) return pathHref({ ...reach, fileLinks: 'file://' }, forward)
   if (!forward.startsWith('//')) return pathHref(reach, /^[/~.]/.test(forward) ? forward : `./${forward}`)
   const href = `file:${encodeURI(forward).replace(/[?#]/g, encodeURIComponent)}`
-  return href.length <= LINK_MAX ? href : undefined
+  return href.length <= LINK_MAX && !launches(href) ? href : undefined
 }
 
 type LinkPiece = { text: string; path?: string }

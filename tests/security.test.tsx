@@ -56,9 +56,10 @@ test('terminal control sequences in a reply are never drawn', async $ => {
 
 const TARGETS: [href: string, linkedWithFileLinks: boolean][] = [
   ['https://a.dev', true],
-  ['file:///Applications/Calculator.app', true],
-  ['FILE:///C:/Windows/System32/cmd.exe', true],
-  ['file://evil.example/share/x.exe', true],
+  ['file:///Applications/Calculator.app', false],
+  ['FILE:///C:/Windows/System32/cmd.exe', false],
+  ['file://evil.example/share/x.exe', false],
+  ['file:///tmp/notes.md', true],
   ['smb://host/share', false],
   ['ms-msdt:/id', false],
   ['javascript:alert(1)', false],

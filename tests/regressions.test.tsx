@@ -366,6 +366,8 @@ test('the help screen shows every element prismantis draws', async () => {
   expect(showcaseText([])).toContain('open on click in a terminal that draws hyperlinks')
   expect(showcaseText([])).toContain('the file each one read or edited opens on click')
   expect(showcaseText([])).toContain('f(*args, **kwargs)')
+  expect(showcaseText([])).toContain('Programs and launchers stay plain text')
+  expect(blocks.some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text.endsWith('.sh')) && b.inline.some(n => n.kind === 'path' && n.text.endsWith('.app')))).toBe(true)
   expect(blocks.some(b => b.kind === 'list' && b.items.some(i => i.task === true) && b.items.some(i => i.task === false) && b.items.some(i => i.depth > 0 && i.task !== undefined))).toBe(true)
   expect(kinds.has('notes')).toBe(true)
   expect(blocks.some(b => b.kind === 'paragraph' && b.inline.length === 1 && b.inline[0]?.kind === 'dim' && b.raw === '</summary>')).toBe(true)
@@ -1878,3 +1880,61 @@ test('quotes nested past eight levels keep their text and parse in linear time',
   expect(depth).toBe(8)
   expect(at?.kind === 'paragraph' && inlineText(at.inline).endsWith('> deep')).toBe(true)
 })
+
+const PROGRAMS = [
+  '/Applications/Calculator.app', '/tmp/run/x.command', '/tmp/run/x.exe', '/tmp/run/x.bat', '/tmp/run/x.cmd', '/tmp/run/x.ps1', '/tmp/run/x.vbs', '/tmp/run/x.js',
+  '/tmp/run/x.hta', '/tmp/run/x.lnk', '/tmp/run/x.desktop', '/tmp/run/x.sh', '/tmp/run/x.msi', '/tmp/run/x.scr', '/tmp/run/x.jar', '/tmp/run/x.py', '/tmp/run/x.url',
+  '/tmp/run/x.AppImage', '/tmp/run/X.EXE', '/tmp/run/Setup.Command', '/tmp/run/x.Sh', '/tmp/run/x.pdf.exe', '/Applications/Calculator.app/', '/Applications/Calculator.app/Contents/MacOS/Calculator',
+]
+
+const DOCUMENTS = ['/tmp/doc/a.ts', '/tmp/doc/a.md', '/tmp/doc/a.json', '/tmp/doc/a.png', '/tmp/doc/a.txt', '/tmp/doc/a.html', '/tmp/doc/a.exe.txt', '/tmp/doc/scripts/', '/tmp/chart.js/README.md']
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`paths to programs and launchers stay plain colored text on ${surface}, while documents link`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount([...PROGRAMS, ...DOCUMENTS].join(' and '), 1000), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.label)).toEqual(surface === 'terminal' ? DOCUMENTS : [])
+    for (const path of PROGRAMS) expect([path, (await ui.find({ type: 'Text', text: new RegExp(`^${path.replace(/[.]/g, '\\$&')}$`) }))?.props.color]).toEqual([path, PRESETS['catppuccin-mocha'].path])
+    await ui.unmount()
+  })
+
+  test(`file:// links to programs and launchers draw as text on ${surface}, whatever their case, slash, query, fragment or encoding`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const programs = ['file:///tmp/x.exe?y=1', 'file:///tmp/x.EXE#top', 'file:///Applications/Calculator.app/', 'file:///tmp/x%2Ecommand', 'file:///C:/x.exe.', 'file:///C:/x.exe::$DATA', 'file:///tmp/x.exe%00.txt', 'file://server/share/setup.msi']
+    const documents = ['file:///tmp/a.html#x.exe', 'file:///tmp/report.md?open=x.exe', 'file:///tmp/x.exe.txt']
+    const ui = await $.ui.mount({ ...mount([...programs, ...documents].map(href => `[${href}](${href})`).join(' and '), 1000), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? documents : [])
+    for (const href of programs) expect([href, await ui.find({ type: 'Text', text: new RegExp(`^${href.replace(/[.?$]/g, '\\$&')}$`) }) !== undefined]).toEqual([href, true])
+    await ui.unmount()
+  })
+
+  for (const toolOutput of ['full', 'quiet'] as const) {
+    test(`tool rows and shell edit cards keep programs and launchers as plain colored text on ${surface} (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
+      filesAt(on, '2.1.289')
+      if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+      let calls = 0
+      const row = async (tool: string, input: unknown) => {
+        const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall(tool, input, `launcher-${calls++}`) })
+        const links = await linkPairs(ui)
+        await ui.unmount()
+        return links
+      }
+      expect(await row('Read', { file_path: '/work/app/install.sh' })).toEqual([])
+      expect(await row('Edit', { file_path: 'C:\\Users\\me\\run.PS1' })).toEqual([])
+      expect(await row('Read', { file_path: '\\\\server\\share\\setup.exe' })).toEqual([])
+      expect(await row('Grep', { pattern: 'x', path: '/Applications/Calculator.app/' })).toEqual([])
+      expect(await row('Read', { file_path: '/work/app/src/app.ts' })).toEqual(surface === 'terminal' ? [['src/app.ts', 'file:///work/app/src/app.ts']] : [])
+      const grouped = [toolCall('Read', { file_path: '/work/app/src/app.ts' }, 'launcher-g1'), toolCall('Read', { file_path: '/work/app/install.sh' }, 'launcher-g2')]
+      const group = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolGroup', props: { calls: grouped, isActive: false, isExpanded: false } })
+      expect(await linkPairs(group)).toEqual(surface === 'terminal' && toolOutput === 'quiet' ? [['src/app.ts', 'file:///work/app/src/app.ts']] : [])
+      await group.unmount()
+      const output = { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/work/app/build.sh', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+one'] }] }], moreFiles: 0 } }
+      const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolResult', props: { tool_use_id: 'launcher-card', tool: 'Bash', output, isErrored: false } })
+      expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+      expect((await ui.find({ type: 'Text', text: /^build\.sh $/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+      await ui.unmount()
+    })
+  }
+}
