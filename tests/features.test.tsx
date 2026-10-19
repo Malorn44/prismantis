@@ -1254,11 +1254,15 @@ const inDemoApp = (on: On) => {
 }
 const numbered = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`)
 
-test('shell edits tell new and removed files apart from changed ones', () => {
-  const kinds = (...files: unknown[]) => bashEdits(shellFiles(...files))?.files.map(f => `${f.kind} ${f.path}`)
-  expect(kinds(removedFile('a.txt', ['one', 'two']), madeFile('b.txt', ['one', 'two']))).toEqual(['deleted /home/demo/app/a.txt', 'created /home/demo/app/b.txt'])
+test('shell edits tell new, removed and renamed files apart from changed ones', () => {
+  const kinds = (...files: unknown[]) => bashEdits(shellFiles(...files))?.files.map(f => (f.kind === 'renamed' ? `${f.path} → ${f.to}` : `${f.kind} ${f.path}`))
+  expect(kinds(removedFile('a.txt', ['one', 'two']), madeFile('b.txt', ['one', 'two']))).toEqual(['/home/demo/app/a.txt → /home/demo/app/b.txt'])
+  expect(kinds(madeFile('b.txt', ['one']), removedFile('a.txt', ['one']))).toEqual(['/home/demo/app/a.txt → /home/demo/app/b.txt'])
+  expect(kinds(removedFile('a.txt', ['one']), madeFile('b.txt', ['one', 'two']))).toEqual(['deleted /home/demo/app/a.txt', 'created /home/demo/app/b.txt'])
+  expect(kinds(removedFile('a.txt', ['one']), madeFile('b.txt', ['one']), madeFile('c.txt', ['one']))).toEqual(['/home/demo/app/a.txt → /home/demo/app/b.txt', 'created /home/demo/app/c.txt'])
   expect(kinds(madeFile('empty.txt', []), { filePath: '/home/demo/app/src/app.ts', hunks: patch.structuredPatch })).toEqual(['created /home/demo/app/empty.txt', 'modified /home/demo/app/src/app.ts'])
   expect(bashEdits(shellFiles(removedFile('old.txt', ['alpha', 'beta'])))?.files).toEqual([{ kind: 'deleted', path: '/home/demo/app/old.txt', lines: ['alpha', 'beta'] }])
+  expect(kinds(removedFile('pkg_a/__init__.py', []), madeFile('pkg_b/__init__.py', []))).toEqual(['deleted /home/demo/app/pkg_a/__init__.py', 'created /home/demo/app/pkg_b/__init__.py'])
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
@@ -1291,6 +1295,29 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await rowsOf(ui)).toEqual(['1 + only'])
     expect(await ui.find({ type: 'Button' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`a file moved unchanged draws one Renamed line on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(removedFile('move-me.txt', ['one', 'two']), madeFile('moved.txt', ['one', 'two']))))
+    expect(await ui.find({ type: 'Text', text: /^Renamed move-me\.txt → moved\.txt$/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^moved\.txt$/ }))?.props.color).toBe(t.path)
+    expect(await ui.find({ type: 'Text', text: /^(Created|Deleted) / })).toBeUndefined()
+    expect(await rowsOf(ui)).toEqual([])
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`a file moved and changed draws as removed and created on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(removedFile('move-me.txt', ['one', 'two']), madeFile('moved.txt', ['one', 'three']))))
+    expect(await ui.find({ type: 'Text', text: /^Renamed / })).toBeUndefined()
+    expect(await ui.find({ text: /^Deleted move-me\.txt \(2 lines\)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Created moved\.txt \(2 lines\)$/ })).toBeDefined()
+    expect(await rowsOf(ui)).toEqual(['1 + one', '2 + three'])
     await ui.unmount()
   })
 

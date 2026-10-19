@@ -1473,7 +1473,7 @@ export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, 
 
 type WholeFile = { kind: 'created' | 'deleted'; path: string; lines: string[] }
 
-export type FileChange = { kind: 'modified'; path: string; rows: DiffLine[] } | WholeFile
+export type FileChange = { kind: 'modified'; path: string; rows: DiffLine[] } | WholeFile | { kind: 'renamed'; path: string; to: string }
 
 export type BashEdits = { files: FileChange[]; more: number; shared: boolean }
 
@@ -1491,7 +1491,7 @@ export const bashEdits = (output: unknown): BashEdits | undefined => {
   if (!Array.isArray(files) || files.length === 0) return undefined
   const changed = files.map(fileChange)
   if (!changed.every((f): f is FileChange => f !== undefined)) return undefined
-  return { files: changed, more: typeof moreFiles === 'number' && moreFiles > 0 ? moreFiles : 0, shared: shared === true }
+  return { files: renamed(changed), more: typeof moreFiles === 'number' && moreFiles > 0 ? moreFiles : 0, shared: shared === true }
 }
 
 const fileChange = (entry: unknown): FileChange | undefined => {
@@ -1502,6 +1502,27 @@ const fileChange = (entry: unknown): FileChange | undefined => {
   if (kind === 'modified') return { kind, path: file.filePath, rows }
   const mark = kind === 'created' ? '+' : '-'
   return { kind, path: file.filePath, lines: rows.filter(r => r.mark === mark).map(r => r.text) }
+}
+
+const pairable = (file: FileChange): file is WholeFile => (file.kind === 'created' || file.kind === 'deleted') && file.lines.length > 0
+
+const sameLines = (a: string[], b: string[]): boolean => a.length === b.length && a.every((line, i) => line === b[i])
+
+const renamed = (files: FileChange[]): FileChange[] => {
+  const paired = new Set<FileChange>()
+  const out: FileChange[] = []
+  for (const file of files) {
+    if (paired.has(file)) continue
+    const twin = pairable(file) ? files.find((other): other is WholeFile => !paired.has(other) && pairable(other) && other.kind !== file.kind && sameLines(other.lines, file.lines)) : undefined
+    if (!twin) {
+      out.push(file)
+      continue
+    }
+    paired.add(file).add(twin)
+    const [from, to] = file.kind === 'deleted' ? [file, twin] : [twin, file]
+    out.push({ kind: 'renamed', path: from.path, to: to.path })
+  }
+  return out
 }
 
 export const withoutBashEdits = (output: unknown): unknown => {
@@ -1561,10 +1582,20 @@ const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fo
   )
 }
 
+const renamedLine = (el: ElementTable, style: Style, from: string, to: string, key: string): RenderElement => (
+  <el.Text key={`file${key}`}>
+    {'Renamed '}
+    <el.Text color={style.theme.path}>{shortPath(style, from)}</el.Text>
+    {' → '}
+    <el.Text color={style.theme.path}>{shortPath(style, to)}</el.Text>
+  </el.Text>
+)
+
 export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = [], columns?: number): RenderElement => {
   const budget = { left: DIFF_EXTRA }
   const cards = edits.files.map((file, i) =>
     file.kind === 'modified' ? diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), file.path, budget, columns, shortPath(style, file.path))
+    : file.kind === 'renamed' ? renamedLine(el, style, file.path, file.to, String(i))
     : wholeFileCard(el, style, file, fold, `${id}:${i}`, String(i), budget, columns))
   const more = edits.more ? [<el.Text key="more" dimColor>{`… +${edits.more} more ${edits.more === 1 ? 'file' : 'files'}`}</el.Text>] : []
   const said = notes.map((note, i) => <el.Text key={`note${i}`} dimColor>{`(${note})`}</el.Text>)
