@@ -720,7 +720,7 @@ const TASK_GLYPHS = { checks: ['[ ]', '[✓]'], ticks: ['○', '✓'], box: ['�
 const glyphOf = (style: Style, item: Extract<Block, { kind: 'list' }>['items'][number]): string =>
   item.task !== undefined ? TASK_GLYPHS[style.taskStyle][item.task ? 1 : 0] : /\d/.test(item.marker) ? item.marker : item.depth ? '◦' : '•'
 
-const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'list' }>, columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip, open = true) => {
+const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'list' }>, columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip, open = true, tail?: number) => {
   const { Box, Text } = el
   const t = style.theme
   const tasks = block.items.filter(item => item.task !== undefined)
@@ -764,7 +764,7 @@ const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind
         return (
           <Box key={k} flexDirection="column">
             {row}
-            <Box flexDirection="column" paddingLeft={pad}>{renderNested(el, style, item.blocks, columns - pad, k, copy, fold, tip, { open, gap: false })}</Box>
+            <Box flexDirection="column" paddingLeft={pad}>{renderNested(el, style, item.blocks, columns - pad, k, copy, fold, tip, { open, gap: false, tail: tail !== undefined && i === block.items.length - 1 ? tail - pad : undefined })}</Box>
           </Box>
         )
       })}
@@ -838,9 +838,12 @@ const closesWithCopy = (block: Block): boolean => {
 const FULL = Infinity
 
 type Span = { lo: number; hi: number }
+type Slot = { clear: number }
 type Place = { top?: number; bottom?: number; left?: number; right?: number; paddingLeft?: number; justifyContent?: 'flex-end' }
 type Shape = { span: Span; head: number; first?: number; last?: number }
-export type Room = { open: boolean; gap: boolean; full?: boolean; above?: boolean; below?: boolean }
+export type Room = { open: boolean; gap: boolean; full?: boolean; cells?: number; tail?: number; above?: Slot; below?: Slot; reply?: RenderElement | null }
+
+export const replyRoom = (hover: boolean, reply: RenderElement | null, cells?: number): Room => ({ open: true, gap: true, full: true, cells, reply: hover ? reply : null })
 
 const exactly = (w: number): Span => ({ lo: w, hi: w })
 
@@ -1022,24 +1025,173 @@ const reachFrom = (style: Style, raw: Block, cols: number): number => {
   }
 }
 
-type Fit = Shape & { need: number; cols: number; open: boolean; figure: boolean; start: boolean; above?: boolean; below?: boolean }
+const hasNote = (inline: Inline[]): boolean => inline.some(n => n.kind === 'footnote' || ('children' in n && hasNote(n.children)))
 
-const onRow = (f: Fit, at: Place, content: number | undefined): Place | null => {
+const splitWord = (rows: string[], word: string, columns: number) => {
+  const chars = [...word]
+  let visible = width(rows.at(-1)!)
+  chars.forEach((char, i) => {
+    const size = width(char)
+    if (visible + size <= columns) rows[rows.length - 1] += char
+    else {
+      rows.push(char)
+      visible = 0
+    }
+    visible += size
+    if (visible === columns && i < chars.length - 1) {
+      rows.push('')
+      visible = 0
+    }
+  })
+  if (!visible && rows.at(-1)!.length > 0 && rows.length > 1) {
+    const tail = rows.pop()!
+    rows[rows.length - 1] += tail
+  }
+}
+
+const placeWord = (rows: string[], word: string, columns: number, first: boolean) => {
+  let used = width(rows.at(-1)!)
+  if (!first) {
+    if (used >= columns) {
+      rows.push('')
+      used = 0
+    }
+    rows[rows.length - 1] += ' '
+    used++
+  }
+  const size = width(word)
+  if (size > columns) {
+    if (Math.floor((size - 1) / columns) < 1 + Math.floor((size - (columns - used) - 1) / columns)) rows.push('')
+    splitWord(rows, word, columns)
+    return
+  }
+  if (used + size > columns && used > 0 && size > 0) rows.push('')
+  rows[rows.length - 1] += word
+}
+
+export const wrapRows = (text: string, columns: number): string[] => {
+  const rows = ['']
+  text.split(' ').forEach((word, i) => placeWord(rows, word, columns, i === 0))
+  return rows.map((row, i) => (i > 0 && row.startsWith(' ') ? row.slice(1) : row))
+}
+
+export const lastLine = (text: string, w: number): number => {
+  if (/[\n\t]/.test(text) || w < 1) return FULL
+  return width(wrapRows(text, w).at(-1)!.trimEnd())
+}
+
+const proseTail = (style: Style, inline: Inline[], w: number): number =>
+  flowOf(style, inline, w) || hasNote(inline) ? FULL : lastLine(inlineText(inline), w)
+
+const paragraphTail = (style: Style, inline: Inline[], w: number): number => {
+  const flowed = flowOf(style, inline, w - 2)
+  if (!flowed || hasNote(inline)) return proseTail(style, inline, w)
+  if (flowed.base !== 'R') return lastLine(inlineText(flowed.lines[0]!), w)
+  return mirrored(style) ? width(inlineText(flowed.lines.at(-1)!)) : FULL
+}
+
+const rightLine = (style: Style, block: Block, w: number): number => {
+  if (block.kind !== 'paragraph' || mirrored(style) || hasNote(block.inline)) return FULL
+  const flowed = flowOf(style, block.inline, w - 2)
+  return flowed?.base === 'R' ? width(inlineText(flowed.lines.at(-1)!)) : FULL
+}
+
+const headingTail = (style: Style, block: Extract<Block, { kind: 'heading' }>, w: number): number => {
+  if (flowOf(style, block.inline, w)) return FULL
+  if (style.headingStyle === 'banner' && block.level <= 2) return headingSpan(style, block, w).hi
+  const label = inlineText(block.inline)
+  return lastLine(style.headingStyle === 'uppercase' && block.level === 1 ? label.toUpperCase() : label, w)
+}
+
+const listTail = (style: Style, block: Extract<Block, { kind: 'list' }>, w: number): number => {
+  const item = block.items.at(-1)
+  if (!item) return 0
+  const pad = item.depth * 2 + glyphOf(style, item).length + 1
+  return pad + (item.blocks?.length ? tailRow(style, item.blocks.at(-1)!, w - pad) : proseTail(style, item.inline, w - pad))
+}
+
+const quoteTail = (style: Style, block: Extract<Block, { kind: 'quote' }>, w: number): number => {
+  if (flowOf(style, leadInline(block.blocks), w - 2)?.base === 'R') return FULL
+  const inner = block.blocks.at(-1)
+  return 2 + (inner ? tailRow({ ...style, inside: 'quote' }, inner, w - 2) : 0)
+}
+
+const tailRow = (style: Style, raw: Block, w: number): number => {
+  const block = drawable(raw, style.httpLinks, style.editorLinks)
+  switch (block.kind) {
+    case 'paragraph':
+      return paragraphTail(style, block.inline, w)
+    case 'heading':
+      return headingTail(style, block, w)
+    case 'list':
+      return listTail(style, block, w)
+    case 'quote':
+      return quoteTail(style, block, w)
+    case 'alert':
+      return spanOf(style, block, w).hi
+    case 'table':
+      return style.reorder && isRtlTable(style, block) ? FULL : tableLayout(style, block, w - 2).width
+    case 'code':
+      return FULL
+    case 'rule':
+      return Math.max(8, Math.min(w - 2, 80))
+    case 'notes': {
+      const note = block.notes.at(-1)
+      return note ? lastLine(`${note.mark} ${inlineText(note.inline)}`, w) : FULL
+    }
+  }
+}
+
+const codeTail = (block: Extract<Block, { kind: 'code' }>, w: number, shown: number, toggle?: string, note?: string): number => {
+  if (toggle !== undefined) return 2 + width(`[ ${toggle} ]`)
+  const line = block.lines.slice(0, shown).at(-1)
+  if (line === undefined) return note ? FULL : width(codeHeader(block))
+  const gutter = block.lines.length < NUMBER_AT || block.lines.length > NUMBER_MAX ? 0 : String(block.lines.length).length + 2
+  return 2 + gutter + lastLine(line, w - 2 - gutter)
+}
+
+const oneRow = (style: Style, block: Block, cols: number): boolean => {
+  switch (block.kind) {
+    case 'code':
+      return block.lines.length === 0
+    case 'list':
+      return block.items.length === 1 && !block.items[0]!.blocks?.length && progressWidth(style, block) === undefined && edgeRow(style, block, cols, true) !== FULL
+    case 'quote':
+      return block.blocks.length === 1 && oneRow(style, block.blocks[0]!, cols - 2)
+    case 'paragraph':
+      return edgeRow(style, block, cols, true) !== FULL
+    default:
+      return false
+  }
+}
+
+type Fit = Shape & { need: number; cols: number; open: boolean; figure: boolean; leading: boolean; start: boolean; single: boolean; tail?: number; above?: Slot; below?: Slot }
+
+const rowLimit = (f: Fit, last: boolean): number => (last && f.tail !== undefined ? Math.min(f.cols, f.tail) : f.cols)
+
+const onRow = (f: Fit, at: Place, content: number | undefined, last: boolean): Place | null => {
   if (content === undefined) return null
-  const fits = !f.figure && content + 1 + f.need <= f.cols
+  const limit = rowLimit(f, last)
+  const fits = !f.figure && content + 1 + f.need <= limit
   if (f.start) return fits ? { ...at, left: 0 } : null
-  if (f.span.lo - f.need >= content + 1) return { ...at, right: 0 }
+  if (f.span.lo - f.need >= content + 1 && (limit === f.cols || f.span.hi <= limit)) return { ...at, right: 0 }
   return fits && f.open ? { ...at, left: content, paddingLeft: 1 } : null
 }
 
-const inGap = (f: Fit, at: Place, free: boolean | undefined): Place | null => {
-  if (!free) return null
-  if (f.start) return { ...at, left: 0, right: 0 }
-  return f.span.lo >= f.need ? { ...at, left: 0, right: 0, justifyContent: 'flex-end' } : null
+const gapShift = (f: Fit, clear: number): number => {
+  if (clear === 0) return 0
+  return (f.figure && !f.leading) || f.span.hi === FULL ? clear : Math.max(0, f.span.hi - (f.cols - clear))
+}
+
+const inGap = (f: Fit, at: Place, slot: Slot | undefined): Place | null => {
+  if (!slot) return null
+  if (f.start) return slot.clear === 0 || (!f.figure && f.need <= f.cols - slot.clear) ? { ...at, left: 0, right: slot.clear } : null
+  const by = gapShift(f, slot.clear)
+  return f.span.lo - by >= f.need ? { ...at, left: 0, right: by, justifyContent: 'flex-end' } : null
 }
 
 const placeButtons = (f: Fit): Place | null =>
-  onRow(f, { top: f.head }, f.first) ?? onRow(f, { bottom: 0 }, f.last) ?? inGap(f, { bottom: -1 }, f.below) ?? inGap(f, { top: -1 }, f.above)
+  onRow(f, { top: f.head }, f.first, f.single) ?? onRow(f, { bottom: 0 }, f.last, true) ?? inGap(f, { bottom: -1 }, f.below) ?? inGap(f, { top: -1 }, f.above)
 
 const blockShape = (style: Style, block: Block, cols: number, start: boolean): Shape => {
   const span = start ? { lo: cols, hi: FULL } : spanOf(style, block, cols)
@@ -1088,8 +1240,12 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
   const groups = figureGroups(blocks, drawn)
   const groupOf: number[] = []
   groups.forEach((group, g) => group.forEach(b => (groupOf[b] = g)))
-  const slotAbove = (g: number): boolean | undefined => (g === 0 ? room.above : room.gap)
-  const slotBelow = (g: number): boolean | undefined => (g === groups.length - 1 ? room.below : room.gap)
+  const reply = (hover && room.reply) || null
+  const replyWidth = reserved([reply])
+  const slotsFor = (above: boolean) => ({
+    above: (g: number): Slot | undefined => (g === 0 ? room.above : room.gap ? { clear: above && g === groups.length - 1 ? replyWidth + 1 : 0 } : undefined),
+    below: (g: number): Slot | undefined => (g === groups.length - 1 ? room.below : room.gap ? { clear: above && g === groups.length - 2 ? replyWidth + 1 : 0 } : undefined),
+  })
   const foldLabel = (b: number) => {
     const element = toggles[b]?.element
     return element?.type === 'Button' ? String(element.props.label) : undefined
@@ -1108,30 +1264,81 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
   }
   const shapes: Shape[] = []
   const shapeOf = (b: number): Shape => (shapes[b] ??= shapeAt(b))
+  const singles: boolean[] = []
+  const singleOf = (b: number): boolean => (singles[b] ??= oneRow(style, shown[b]!, columns))
   const needs = hover ? buttons.map(({ first, second, html }, b) => reserved(codes[b] ? [codes[b]] : [first, second, html])) : []
-  const placeOne = (b: number, g: number, taken: boolean): Place | null => {
+  const lastRowOf = (b: number, cells: number): number => {
+    const block = shown[b]!
+    if (drawn.get(b)?.element) {
+      const shape = artOf(b)
+      return shape?.last ?? shape?.first ?? FULL
+    }
+    if (block.kind === 'code') return codeTail(block, cells, linesShown(b, block), foldLabel(b), drawn.get(b)?.note)
+    return tailRow(style, block, cells)
+  }
+  const contentWidth = (b: number): number => {
+    const block = shown[b]!
+    const art = drawn.get(b)?.art
+    return block.kind === 'table' ? tableLayout(style, block, columns).width : art === undefined ? FULL : artShape(art, columns).span.hi
+  }
+  const flowEnd = (group: number[], cells: number): number => {
+    let x = 0
+    let end = 0
+    for (const b of group) {
+      const w = Math.max(contentWidth(b), needs[b] ?? 0)
+      const start = x > 0 && x + 4 + w <= cells ? x + 4 : 0
+      x = start + w
+      end = start + (rtlTables[b] ? w : contentWidth(b))
+    }
+    return end
+  }
+  const lastGroup = groups.length - 1
+  const tailWidth = (cells: number): number => {
+    const group = groups[lastGroup]
+    if (!group) return FULL
+    return group.length > 1 ? flowEnd(group, cells) : lastRowOf(group[0]!, cells)
+  }
+  const corner = (cells: number | undefined): Place | null => {
+    if (reply === null || cells === undefined || lastGroup < 0) return null
+    if (tailWidth(cells) + 1 + replyWidth <= cells) return { bottom: 0, right: 0 }
+    const group = groups[lastGroup]!
+    return group.length === 1 && rightLine(style, shown[group[0]!]!, cells) + 1 + replyWidth <= cells ? { bottom: 0, left: 0 } : null
+  }
+  const replyCorner = grid ? corner(room.cells) : null
+  const tail = replyCorner?.right === 0 ? room.cells! - replyWidth - 1 : room.tail
+  const placeOne = (b: number, g: number, slots: ReturnType<typeof slotsFor>, taken: boolean): Place | null => {
     const need = needs[b] ?? 0
     if (!need) return null
+    const group = groups[g]!
     const shape = shapeOf(b)
     const span = starts[b] ? shape.span : { lo: Math.max(shape.span.lo, need), hi: Math.max(shape.span.hi, need) }
-    return placeButtons({ ...shape, span, need, cols: columns, open: room.open, figure: groups[g]!.length > 1, start: starts[b]!, above: taken ? undefined : slotAbove(g), below: slotBelow(g) })
+    const last = g === lastGroup && group.length === 1
+    return placeButtons({ ...shape, span, need, cols: columns, open: room.open, figure: group.length > 1, leading: group[0] === b, start: starts[b]!, single: singleOf(b), tail: last ? tail : undefined, above: taken ? undefined : slots.above(g), below: slots.below(g) })
   }
-  const placesFor = () => {
+  const placesFor = (slots: ReturnType<typeof slotsFor>) => {
     const out: (Place | null)[] = blocks.map(() => null)
     groups.forEach((group, g) => {
       const taken = g > 0 && groups[g - 1]!.some(b => out[b]?.bottom === -1)
-      for (const b of group) out[b] = placeOne(b, g, taken)
+      for (const b of group) out[b] = placeOne(b, g, slots, taken)
     })
     return out
   }
   const mainCorner = (b: number): Place => ({ ...(opensWithCopy(blocks[b]!) ? { bottom: 0 } : { top: drawn.get(b)?.note ? 1 : 0 }), ...(starts[b] ? { left: 0 } : { right: 0 }) })
-  const places = grid ? placesFor() : blocks.map((_, b) => (needs[b] ? mainCorner(b) : null))
+  const choose = (): { places: (Place | null)[]; at: Place | null; above: boolean } => {
+    if (!grid) return { places: blocks.map((_, b) => (needs[b] ? mainCorner(b) : null)), at: reply === null ? null : { bottom: 0, right: 0 }, above: false }
+    if (reply === null || replyCorner) return { places: placesFor(slotsFor(false)), at: replyCorner, above: false }
+    if (groups.length > 1 && replyWidth < columns) return { places: placesFor(slotsFor(true)), at: { top: -1, right: 0 }, above: true }
+    return { places: placesFor(slotsFor(false)), at: null, above: false }
+  }
+  const { places, at: replyAt, above: replyAbove } = choose()
+  const { above: slotAbove, below: slotBelow } = slotsFor(replyAbove)
   const usesRow = (g: number, side: 'top' | 'bottom') => !!groups[g]?.some(b => places[b]?.[side] === -1)
   const nested = (b: number): Room => {
     const g = groupOf[b]!
     return {
       open: room.open,
       gap: true,
+      tail: g === lastGroup && tail !== undefined ? tail - 2 : undefined,
       above: places[b]?.top === -1 || usesRow(g - 1, 'bottom') ? undefined : slotAbove(g),
       below: places[b]?.bottom === -1 || usesRow(g + 1, 'top') ? undefined : slotBelow(g),
     }
@@ -1141,6 +1348,7 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
     const need = needs[b] ?? 0
     return !room.full || !at?.paddingLeft || at.left === undefined ? need : Math.max(need, at.left + at.paddingLeft + need)
   }
+  const tailOf = (b: number) => (groupOf[b] === lastGroup ? tail : undefined)
   const codeButton = (b: number) => {
     const button = codes[b] ?? null
     const at = places[b]
@@ -1190,7 +1398,7 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
         )
       }
       case 'list':
-        return renderList(el, style, block, columns, key, copy, fold, tip, room.open)
+        return renderList(el, style, block, columns, key, copy, fold, tip, room.open, tailOf(b))
       case 'table':
         return renderTable(el, style, block, columns, key, rtlTables[b]!, tip)
       case 'notes':
@@ -1238,11 +1446,13 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
       </Box>
     )
   })
-  return groups.map(group => (group.length === 1 ? copied[group[0]!]! : (
+  const out = groups.map(group => (group.length === 1 ? copied[group[0]!]! : (
     <Box key={`row${group[0]}`} flexDirection="row" flexWrap="wrap" columnGap={4} rowGap={1}>
       {group.map(b => <Box key={`f${b}`} flexShrink={0}>{copied[b]}</Box>)}
     </Box>
   )))
+  if (reply && replyAt) out[out.length - 1] = <Box flexDirection="column">{out.at(-1)}{float(replyAt, reply)}</Box>
+  return out
 }
 
 export type ToolRow = { tool: string; input: unknown; isRunning: boolean; isErrored: boolean; isInterrupted: boolean }

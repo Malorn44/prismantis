@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { parse } from '../hooks/markdown'
 import { PRESETS } from '../hooks/presets'
-import { width } from '../hooks/render'
+import { lastLine, width } from '../hooks/render'
 import { resolveStyle } from '../hooks/theme'
 
 const TABLE = [
@@ -294,12 +294,17 @@ test('copyButtonStyle hover sets the buttons of narrow tables, quotes, lists and
   await ui.unmount()
 })
 
-test('copyButtonStyle hover moves a full block\'s buttons to the blank row below it, or above it at the reply\'s end', { options: { copyButtonStyle: 'hover' } }, async $ => {
+test('copyButtonStyle hover moves a full block\'s buttons to the blank row below it, or above it at the reply\'s end, clear of ⧉ copy reply', { options: { copyButtonStyle: 'hover' } }, async $ => {
   const ui = await $.ui.mount({ ...draw(`${TABLE}\n\nBetween the tables.\n\n${TABLE}`), viewport: { columns: 44, rows: 40 }, surface: 'terminal' })
-  expect((await hoverPlaces(ui)).filter(p => p.text !== '⧉ copy reply')).toEqual([
+  const border = (await ui.findAll({ type: 'Text' })).find(t => t.text?.startsWith('┌'))!.text!
+  const reply = '[ ⧉ copy reply ]'.length
+  const places = await hoverPlaces(ui)
+  expect(places).toEqual([
     { text: '⧉ md⧉ art', bottom: -1, left: 0, right: 0 },
-    { text: '⧉ md⧉ art', top: -1, left: 0, right: 0 },
+    { text: '⧉ md⧉ art', top: -1, left: 0, right: places[1]!.right },
+    { text: '⧉ copy reply', top: -1, right: 0 },
   ])
+  expect(width(border) - Number(places[1]!.right) + 1 + reply).toBeLessThanOrEqual(40)
   await ui.unmount()
 })
 
@@ -370,6 +375,74 @@ test('copyButtonStyle hover keeps every button within reach of its block: a floa
   expect(seen.blankRow > 0 && seen.pastRow > 0).toBe(true)
 })
 
+const CLOSING = 'The buttons now appear only on cells nothing draws so text is never covered while the reply column keeps its layout exactly as before when nothing is hovered at all the buttons now'
+const CLOSING_SHORT = CLOSING
+const CLOSING_FULL = `${CLOSING} appear only on cells nothing draws`
+
+test('copyButtonStyle hover sets ⧉ copy reply at the reply\'s bottom right, on its last row, whenever that row leaves room, wrapped prose included', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const corner = { text: '⧉ copy reply', bottom: 0, right: 0 }
+  for (const text of [COPY_SAMPLE, `Intro.\n\n\`\`\`bash\nls\n\`\`\`\n\n${CLOSING_SHORT}`, 'Intro.\n\n- one\n- two', 'Intro.\n\n| a | b |\n|---|---|\n| 1 | 2 |', 'Intro.\n\n```bash\nnpm --prefix scripts ci\n```', 'Intro.\n\n| k | v |\n|---|---|\n| 1 | 2 |\n\n| c | d |\n|---|---|\n| 3 | 4 |']) {
+    const ui = await $.ui.mount({ ...draw(text), viewport: { columns: 80, rows: 40 }, surface: 'terminal' })
+    expect((await hoverPlaces(ui)).filter(p => p.text === '⧉ copy reply')).toEqual([corner])
+    await ui.unmount()
+  }
+  expect([lastLine(CLOSING_SHORT, 78), lastLine(CLOSING_FULL, 78)]).toEqual([30, 65])
+  const full = await $.ui.mount({ ...draw(`Intro.\n\n\`\`\`bash\nls\n\`\`\`\n\n${CLOSING_FULL}`), viewport: { columns: 80, rows: 40 }, surface: 'terminal' })
+  expect((await hoverPlaces(full)).filter(p => p.text === '⧉ copy reply')).toEqual([{ text: '⧉ copy reply', top: -1, right: 0 }])
+  await full.unmount()
+})
+
+const FILL_78 = [...Array(12).fill('aaaaa'), 'bbbbbb'].join(' ')
+const FILL_77 = [...Array(12).fill('aaaaa'), 'bbbbb'].join(' ')
+const FILL_76 = [...Array(11).fill('aaaaa'), 'cccccccccc'].join(' ')
+const ENGINE_LAST_ROWS: [string, number, number][] = [
+  [`ab https://example.com/${'a'.repeat(118)}`, 78, 63],
+  [`See ${'ア'.repeat(71)}`, 78, 68],
+  ['Two  spaces  between  words  here  shift  every  later  break  in  this  sentence  so  the  last  line  lands  somewhere  else  than  a  single  space  wrap.', 78, 5],
+  ['  return thing.method(alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda, mu)', 76, 24],
+  ['  value: thing.method(alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda, mu, nu)', 76, 28],
+  [`${FILL_78} ccccc dd.`, 78, 9],
+  [`${FILL_78}  ccccc dd.`, 78, 10],
+  [`${FILL_78}   ccccc dd.`, 78, 11],
+  [`${FILL_77}  ccccc dd.`, 78, 9],
+  [`${FILL_76}   ccccc dd.`, 78, 9],
+  [`${FILL_77}   ccccc dd.`, 78, 10],
+  [`${FILL_78} ${'w'.repeat(90)}`, 78, 13],
+  [`ab  ${'u'.repeat(140)}`, 78, 66],
+]
+
+test('copyButtonStyle hover measures a wrapped last line as Claude Code 2.1.303 draws it: kept indentation, double spaces, words wider than the row', async () => {
+  for (const [text, cells, drawn] of ENGINE_LAST_ROWS) expect({ text: text.slice(0, 24), cells, last: lastLine(text, cells) }).toEqual({ text: text.slice(0, 24), cells, last: drawn })
+})
+
+test('copyButtonStyle hover keeps ⧉ copy reply off a closing line that wraps long, even when a word runs past the row', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const reply = (places: Record<string, unknown>[]) => places.filter(p => p.text === '⧉ copy reply')
+  const url = await $.ui.mount({ ...draw(`Intro.\n\nab https://example.com/${'a'.repeat(118)}`), viewport: { columns: 80, rows: 40 }, surface: 'terminal' })
+  expect(reply(await hoverPlaces(url))).toEqual([{ text: '⧉ copy reply', top: -1, right: 0 }])
+  await url.unmount()
+  const code = await $.ui.mount({ ...draw('Intro.\n\n```js\nconst x = {\n  value: thing.method(alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda, mu, nu)\n```'), viewport: { columns: 80, rows: 40 }, surface: 'terminal' })
+  expect(reply(await hoverPlaces(code))).toEqual([{ text: '⧉ copy reply', bottom: 0, right: 0 }])
+  await code.unmount()
+})
+
+test('copyButtonStyle hover always draws ⧉ copy reply: past a right-to-left ending on its free side, past drawn math, past small tables side by side', { options: { copyButtonStyle: 'hover', rtl: 'warp' } }, async $ => {
+  const reply = async (text: string, columns = 120) => {
+    const ui = await $.ui.mount({ ...draw(text), viewport: { columns, rows: 40 }, surface: 'terminal' })
+    const found = (await hoverPlaces(ui)).filter(p => p.text === '⧉ copy reply')
+    await ui.unmount()
+    return found
+  }
+  expect(await reply('שלום עולם, זו תשובה קצרה בעברית.')).toEqual([{ text: '⧉ copy reply', bottom: 0, left: 0 }])
+  expect(await reply('Intro.\n\n$$x^2$$')).toHaveLength(1)
+  expect(await reply('Three tables close this.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n| c | d |\n|---|---|\n| 3 | 4 |\n\n| e | f |\n|---|---|\n| 5 | 6 |', 80)).toEqual([{ text: '⧉ copy reply', bottom: 0, right: 0 }])
+})
+
+test('copyButtonStyle hover gives ⧉ copy reply the row above the last block even when that block loses its own slot there', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw(`Intro that wraps past the edge of a narrow terminal, so it has no free end at all here.\n\n${TABLE}`), viewport: { columns: 38, rows: 40 }, surface: 'terminal' })
+  expect(await hoverPlaces(ui)).toEqual([{ text: '⧉ copy reply', top: -1, right: 0 }])
+  await ui.unmount()
+})
+
 test('copyButtonStyle hover keeps main\'s corners on desktop, where text is not drawn on a cell grid', { options: { copyButtonStyle: 'hover' } }, async $ => {
   for (const text of [COPY_SAMPLE, '| a | b |\n|---|---|\n| 1 | 2 |\n\nText.\n\n> z\n\n- y\n\n> [!NOTE]\n> w', `${TABLE}\n\nBetween the tables.\n\n${TABLE}`]) {
     const ui = await $.ui.mount({ ...draw(text), surface: 'desktop' })
@@ -381,6 +454,21 @@ test('copyButtonStyle hover keeps main\'s corners on desktop, where text is not 
     }
     await ui.unmount()
   }
+})
+
+test('copyButtonStyle hover keeps a closing block\'s own buttons clear of ⧉ copy reply on the last row', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw('Intro.\n\n> Quote closes.'), viewport: { columns: 44, rows: 40 }, surface: 'terminal' })
+  expect(await hoverPlaces(ui)).toEqual([
+    { text: '⧉ copy', top: -1, left: 0, right: 0 },
+    { text: '⧉ copy reply', bottom: 0, right: 0 },
+  ])
+  await ui.unmount()
+  const wide = await $.ui.mount({ ...draw('Intro.\n\n> Quote closes.'), surface: 'terminal' })
+  expect(await hoverPlaces(wide)).toEqual([
+    { text: '⧉ copy', top: 0, left: '│ Quote closes.'.length },
+    { text: '⧉ copy reply', bottom: 0, right: 0 },
+  ])
+  await wide.unmount()
 })
 
 test('copyButtonStyle hover makes a block at least as wide as its buttons, and wide enough to hold buttons set past its row', { options: { copyButtonStyle: 'hover' } }, async $ => {

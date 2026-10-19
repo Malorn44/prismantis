@@ -10,7 +10,8 @@ const hoverStyle = resolveStyle({ theme: 'dracula', rtl: 'warp', copyButtonStyle
 const button = (_text, key, label = '⧉ copy') => ({ type: 'Button', props: { key, label }, children: [] })
 const hoverReply = (text, columns = 200) => {
   const blocks = parse(text, { numbers: hoverStyle.highlightNumbers, paths: hoverStyle.highlightPaths })
-  return renderBlocks(el, hoverStyle, blocks, columns, drawDiagrams(el, hoverStyle, blocks, columns), button)
+  const room = { open: true, gap: true, full: true, cells: columns + 2, reply: button('', 'reply', '⧉ copy reply') }
+  return renderBlocks(el, hoverStyle, blocks, columns, drawDiagrams(el, hoverStyle, blocks, columns), button, undefined, undefined, room)
 }
 const columns = 200
 const RUNS = Number(process.env.RUNS ?? 200)
