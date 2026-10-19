@@ -11,7 +11,7 @@ import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
 import type { Fold } from './render'
-import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import type { SetupStep } from './help'
 import { HINT, ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, THEME_PREVIEW, findSetup, helpText, languageShowcase, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
@@ -230,6 +230,13 @@ type Probes = { terminal?: Promise<Terminal | null>; htmlCopy?: Promise<Clipboar
 
 const linkReach = ($: EngineInterface, probes: Probes): Promise<LinkReach> =>
   (probes.links ??= $.session.version().then(v => ({ http: takesHttpLinks(v.base), editor: takesEditorLinks(v.base), marks: takesClickableMarks(v.base) }), () => ({ http: false, editor: false, marks: false })))
+
+const fileCard = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, output: unknown, id: string, style: Style, probes: Probes, drawn: () => Style, columns?: number): Promise<RenderElement | undefined> => {
+  const press = (await linkReach($, probes)).marks
+  if (leftToEngine(output, press)) return undefined
+  await locate($, style)
+  return renderDiffCard(el, drawn(), output, folder($, el, await read($, unfolded), press), id, columns)
+}
 
 const probe = async ($: EngineInterface, style: Style, probes: Probes): Promise<Terminal | null> => {
   probes.terminal ??= applyRtl($, style)
@@ -522,11 +529,7 @@ export const register: Register = (on, options) => {
     })
     on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
       const cards = (): Style => ({ ...fit(e.viewport), pressPreview: e.surface === 'terminal' })
-      if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) {
-        await locate($, style)
-        const el = $.ui.resolve(e)
-        return renderDiffCard(el, cards(), e.props.output, folder($, el, await read($, unfolded), (await linkReach($, probes)).marks), e.props.tool_use_id, e.viewport?.columns) ?? next(e)
-      }
+      if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) return (await fileCard($, $.ui.resolve(e), e.props.output, e.props.tool_use_id, style, probes, cards, e.viewport?.columns)) ?? next(e)
       const edits = e.props.tool === 'Bash' && !e.props.isErrored ? bashEdits(e.props.output) : undefined
       if (edits) {
         await locate($, style)

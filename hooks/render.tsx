@@ -1088,10 +1088,15 @@ export const diffTint = (text: string | undefined, color: string | undefined): s
   return tint(base, hue, share)
 }
 
+export const leftToEngine = (output: unknown, press: boolean): boolean => {
+  if (output === null || typeof output !== 'object') return false
+  const out = output as { type?: unknown; staged?: unknown }
+  return out.staged === true || (out.type === 'create' && !press)
+}
+
 export const diffLines = (output: unknown): DiffLine[] | undefined => {
   if (output === null || typeof output !== 'object') return undefined
-  const out = output as { type?: unknown; content?: unknown; structuredPatch?: unknown }
-  if (out.type === 'create' && typeof out.content === 'string') return lines(out.content).map((text, i) => ({ mark: '+', num: i + 1, text, hunk: 0 }))
+  const out = output as { structuredPatch?: unknown }
   if (!Array.isArray(out.structuredPatch) || out.structuredPatch.length === 0) return undefined
   const rows: DiffLine[] = []
   for (const [h, hunk] of (out.structuredPatch as { oldStart?: unknown; newStart?: unknown; lines?: unknown }[]).entries()) {
@@ -1340,6 +1345,13 @@ const spend = (budget: Budget, cost: number): boolean => {
   return true
 }
 
+const filePieces = (style: Style, path: string | undefined, lines: string[]): Piece[][] => fileSegments(style, path, lines).map(segs => tabbed(wordPieces(segs, null)))
+
+const numberedLine = (el: ElementTable, style: Style, label: string, pieces: Piece[], key: string): RenderElement[] => [
+  <el.Text key={`${key}.g`} color={style.theme.codeComment} dimColor>{label}</el.Text>,
+  <el.Text key={`${key}.c`} color={style.theme.codeText}>{drawCode(el, style, pieces, undefined, undefined, `${key}.c`)}</el.Text>,
+]
+
 const partCost = (part: Piece[]): number => Math.max(1, part.reduce((m, p) => m + (p.color || p.italic || p.word ? 2 : 1), 0))
 
 const lineCost = (parts: Piece[][], bar: boolean, note: boolean, row = 0): number =>
@@ -1488,8 +1500,15 @@ const editedIntoBeing = (output: unknown, rows: DiffLine[]): WholeFile | undefin
   return fresh && typeof out.filePath === 'string' ? { kind: 'created', path: out.filePath, lines: rows.filter(r => r.mark === '+').map(r => r.text) } : undefined
 }
 
+const written = (output: unknown): WholeFile | undefined => {
+  const out = output as { type?: unknown; filePath?: unknown; content?: unknown }
+  return out.type === 'create' && typeof out.filePath === 'string' && typeof out.content === 'string' ? { kind: 'created', path: out.filePath, lines: lines(out.content) } : undefined
+}
+
 export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, fold: Fold, id: string, columns?: number): RenderElement | undefined => {
   const budget = { left: DIFF_EXTRA }
+  const write = written(output)
+  if (write) return diffRow(el, style, [wholeFileCard(el, style, write, fold, id, '', budget, columns, false)], false)
   const rows = diffLines(output)
   if (rows === undefined) return undefined
   const made = editedIntoBeing(output, rows)
@@ -1566,6 +1585,25 @@ const PREVIEW_LINES = 10
 
 const lineCount = (n: number): string => (n === 0 ? 'empty' : `${n} ${n === 1 ? 'line' : 'lines'}`)
 
+const PREVIEW_ROW = 4
+const PLAIN_LINE = 7
+
+const previewRows = (pieces: Piece[], text: string, room: number | undefined, budget: Budget): Piece[][] => {
+  const rich = visualRows(pieces, room)
+  if (spend(budget, Math.max(0, rich.reduce((n, part) => n + PREVIEW_ROW + partCost(part), 0) - PLAIN_LINE))) return rich
+  return visualRows(tabbed(plainParts(text)[0]!), room)
+}
+
+const previewText = (el: ElementTable, style: Style, path: string, shown: string[], key: string, columns: number | undefined, budget: Budget): RenderNode[] => {
+  const gutter = String(shown.length).length
+  const room = columns === undefined ? undefined : columns - 5 - gutter - 2
+  return filePieces(style, path, shown).flatMap((pieces, i) =>
+    previewRows(pieces, shown[i]!, room, budget).flatMap((part, k) => [
+      ...(i || k ? ['\n'] : []),
+      ...numberedLine(el, style, k ? ' '.repeat(gutter + 2) : `${String(i + 1).padStart(gutter)}  `, part, `${key}.${i}.${k}`),
+    ]))
+}
+
 const wholeHead = (el: ElementTable, style: Style, file: WholeFile): RenderElement => (
   <el.Text key="head">
     {file.kind === 'created' ? 'Created ' : 'Deleted '}
@@ -1574,11 +1612,12 @@ const wholeHead = (el: ElementTable, style: Style, file: WholeFile): RenderEleme
   </el.Text>
 )
 
-type RowsOf = { press: boolean; columns: number | undefined; budget: Budget }
+type RowsOf = { marked: boolean; press: boolean; columns: number | undefined; budget: Budget }
 
-const wholeRows = (el: ElementTable, style: Style, file: WholeFile, shown: number, { press, columns, budget }: RowsOf): RenderElement | null => {
+const wholeRows = (el: ElementTable, style: Style, file: WholeFile, shown: number, { marked, press, columns, budget }: RowsOf): RenderElement | null => {
   const lines = file.lines.slice(0, shown)
   if (lines.length === 0) return null
+  if (!marked) return <el.Text key="rows">{previewText(el, style, file.path, lines, 'rows', columns, budget)}</el.Text>
   const diff = lines.map((text, i): DiffLine => ({ mark: file.kind === 'created' ? '+' : '-', num: i + 1, text, hunk: 0 }))
   return press ? diffText(el, style, diff, file.path, columns, budget) : <el.Box key="rows" flexDirection="column">{diffBody(el, style, diff, file.path, columns, budget)}</el.Box>
 }
@@ -1598,14 +1637,14 @@ const wholeBody = (el: ElementTable, style: Style, file: WholeFile, head: Render
   return [toggle?.faced ? toggle.element : head, rows && press ? press(rows, hover) : rows]
 }
 
-const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fold, id: string, key: string, budget: Budget, columns: number | undefined): RenderElement => {
+const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fold, id: string, key: string, budget: Budget, columns: number | undefined, marked = true): RenderElement => {
   const n = file.lines.length
   const created = file.kind === 'created'
   const head = wholeHead(el, style, file)
   const toggle = wholeToggle(fold, file, head, id, key)
   const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : created ? PREVIEW_LINES : 0)
   const press = style.pressPreview === true && toggle?.around !== undefined
-  const rows = wholeRows(el, style, file, shown, { press, columns, budget })
+  const rows = wholeRows(el, style, file, shown, { marked, press, columns, budget })
   const rest = n > shown && (toggle ? !toggle.folded : created)
   return (
     <el.Box key={`file${key}`} flexDirection="column">
