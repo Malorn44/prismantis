@@ -10,7 +10,7 @@ import type { ClipboardBackend } from './clipboard'
 import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
-import type { Fold } from './render'
+import type { BashEdits, Fold } from './render'
 import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import type { SetupStep } from './help'
 import { HINT, ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, THEME_PREVIEW, findSetup, helpText, languageShowcase, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
@@ -236,6 +236,18 @@ const fileCard = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']
   if (leftToEngine(output, press)) return undefined
   await locate($, style)
   return renderDiffCard(el, drawn(), output, folder($, el, await read($, unfolded), press), id, columns)
+}
+
+type ShellCards = { style: Style; surface: RenderSurface; quiet: boolean; first: { id?: string }; command?: string; id: string; columns?: number; probes: Probes; engine: (output: unknown) => Promise<RenderElement> }
+
+const shellCards = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, output: unknown, edits: BashEdits, at: ShellCards): Promise<RenderElement> => {
+  const rest = withoutBashEdits(output)
+  const above = !hasShellOutput(rest) ? null : at.quiet ? renderShellResult(el, at.style, rest) : await at.engine(rest)
+  at.first.id ??= at.id
+  const notes = editNotes(edits, at.first.id === at.id, at.command)
+  const fold = folder($, el, await read($, unfolded), (await linkReach($, at.probes)).marks)
+  const cards = renderBashEdits(el, { ...at.style, pressPreview: at.surface === 'terminal' }, edits, fold, at.id, above !== null, notes, at.columns)
+  return above === null ? cards : <el.Box flexDirection="column">{above}{cards}</el.Box>
 }
 
 const probe = async ($: EngineInterface, style: Style, probes: Probes): Promise<Terminal | null> => {
@@ -507,7 +519,7 @@ export const register: Register = (on, options) => {
     shellCommands.set(id, command)
     if (shellCommands.size > 500) shellCommands.delete(shellCommands.keys().next().value!)
   }
-  let firstEdit: string | undefined
+  const firstEdit: { id?: string } = {}
   if (options.toolRows !== false) {
     on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
       await locate($, style)
@@ -532,14 +544,8 @@ export const register: Register = (on, options) => {
       const edits = e.props.tool === 'Bash' && !e.props.isErrored ? bashEdits(e.props.output) : undefined
       if (edits) {
         await locate($, style)
-        const el = $.ui.resolve(e)
-        const output = withoutBashEdits(e.props.output)
-        const above = !hasShellOutput(output) ? null : quiet ? renderShellResult(el, fit(e.viewport), output) : await next({ ...e, props: { ...e.props, output } })
-        firstEdit ??= e.props.tool_use_id
-        const notes = editNotes(edits, firstEdit === e.props.tool_use_id, shellCommands.get(e.props.tool_use_id))
-        const drawn = { ...fit(e.viewport), pressPreview: e.surface === 'terminal' }
-        const cards = renderBashEdits(el, drawn, edits, folder($, el, await read($, unfolded), (await linkReach($, probes)).marks), e.props.tool_use_id, above !== null, notes, e.viewport?.columns)
-        return above === null ? cards : <el.Box flexDirection="column">{above}{cards}</el.Box>
+        const at = { style: fit(e.viewport), surface: e.surface, quiet, first: firstEdit, command: shellCommands.get(e.props.tool_use_id), id: e.props.tool_use_id, columns: e.viewport?.columns, probes }
+        return shellCards($, $.ui.resolve(e), e.props.output, edits, { ...at, engine: output => next({ ...e, props: { ...e.props, output } }) })
       }
       if (!quiet) return next(e)
       await locate($, style)
