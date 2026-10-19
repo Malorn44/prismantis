@@ -1094,22 +1094,24 @@ export const diffLines = (output: unknown): DiffLine[] | undefined => {
   const rows: DiffLine[] = []
   for (const [h, hunk] of (out.structuredPatch as { oldStart?: unknown; newStart?: unknown; lines?: unknown }[]).entries()) {
     if (typeof hunk?.oldStart !== 'number' || typeof hunk.newStart !== 'number' || !Array.isArray(hunk.lines)) return undefined
-    let [o, n] = [hunk.oldStart, hunk.newStart]
-    for (const l of hunk.lines) {
-      if (typeof l !== 'string') continue
-      if (l.startsWith('\\')) {
-        rows.push({ mark: '\\', num: 0, text: l.slice(1), hunk: h })
-        continue
-      }
-      const mark = l[0] === '+' || l[0] === '-' ? l[0] : ' '
-      let num: number
-      if (mark === '-') num = o++
-      else {
-        if (mark === ' ') o++
-        num = n++
-      }
-      rows.push({ mark, num, text: l.slice(1), hunk: h })
+    rows.push(...hunkRows(hunk.lines, hunk.oldStart, hunk.newStart, h))
+  }
+  return rows
+}
+
+const hunkRows = (lines: unknown[], oldStart: number, newStart: number, hunk: number): DiffLine[] => {
+  const rows: DiffLine[] = []
+  let [o, n] = [oldStart, newStart]
+  for (const l of lines) {
+    if (typeof l !== 'string') continue
+    const mark = (l[0] === '+' || l[0] === '-' || l[0] === '\\' ? l[0] : ' ') as DiffLine['mark']
+    let num = 0
+    if (mark === '-') num = o++
+    else if (mark !== '\\') {
+      if (mark === ' ') o++
+      num = n++
     }
+    rows.push({ mark, num, text: l.slice(1), hunk })
   }
   return rows
 }
@@ -1335,6 +1337,44 @@ export const highlightFile = (el: ElementTable, style: Style, path: string | und
   )
 }
 
+type MarkColors = Record<DiffLine['mark'], string | undefined>
+
+type DiffPaint = { look: Style['diffStyle']; gutter: number; marks: MarkColors; tints: MarkColors; words: MarkColors }
+
+const UNTINTED: MarkColors = { '+': undefined, '-': undefined, ' ': undefined, '\\': undefined }
+
+const diffPaint = (style: Style, gutter: number): DiffPaint => {
+  const t = style.theme
+  const [added, removed] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
+  const tinted = style.diffStyle === 'card' || style.diffStyle === 'full'
+  const lines = { ...UNTINTED, '+': diffTint(t.codeText, added), '-': diffTint(t.codeText, removed) }
+  return {
+    look: style.diffStyle,
+    gutter,
+    marks: { ...UNTINTED, '+': added, '-': removed },
+    tints: tinted ? lines : UNTINTED,
+    words: tinted ? { ...UNTINTED, '+': wordTint(t.codeText, added), '-': wordTint(t.codeText, removed) } : lines,
+  }
+}
+
+const codeRoom = (paint: DiffPaint, columns: number | undefined): number | undefined =>
+  columns === undefined ? undefined : columns - 5 - (paint.look === 'card' ? 4 : 0) - (paint.look === 'bar' ? 2 : 0) - paint.gutter - 3
+
+const lineRows = (el: ElementTable, style: Style, paint: DiffPaint, r: DiffLine, i: number, parts: Piece[][]): RenderElement[] => {
+  const { Box, Text } = el
+  const bg = paint.tints[r.mark]
+  const bar = r.mark === ' ' || r.mark === '\\' ? '  ' : '▌ '
+  const mark = r.mark === '\\' ? '  ' : `${r.mark} `
+  return parts.map((part, k) => (
+    <Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
+      {paint.look === 'bar' ? <Text color={paint.marks[r.mark]}>{bar}</Text> : null}
+      <Text dimColor>{`${k || r.mark === '\\' ? ' '.repeat(paint.gutter) : String(r.num).padStart(paint.gutter)} `}</Text>
+      <Text color={paint.marks[r.mark]} dimColor={r.mark === ' '}>{mark}</Text>
+      <Text color={style.theme.codeText}>{drawCode(el, style, part, bg, paint.words[r.mark], `d${i}.${k}`)}</Text>
+    </Box>
+  ))
+}
+
 const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
   const { Box, Text } = el
   const t = style.theme
@@ -1342,38 +1382,21 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
   const removed = rows.filter(r => r.mark === '-').length
   const toggle = rows.length > DIFF_LINES ? fold?.(id, rows.length - DIFF_LINES, `fold${key}`) : null
   const shown = rows.slice(0, toggle?.folded === false ? DIFF_MAX : DIFF_LINES)
-  const gutter = String(Math.max(0, ...shown.map(r => r.num))).length
-  const [addColor, removeColor] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
-  const color = (mark: DiffLine['mark']) => (mark === '+' ? addColor : mark === '-' ? removeColor : undefined)
-  const look = style.diffStyle
-  const tinted = look === 'card' || look === 'full'
-  const rowTints = { '+': diffTint(t.codeText, addColor), '-': diffTint(t.codeText, removeColor), ' ': undefined, '\\': undefined }
-  const tints = tinted ? rowTints : { '+': undefined, '-': undefined, ' ': undefined, '\\': undefined }
-  const words = tinted ? { '+': wordTint(t.codeText, addColor), '-': wordTint(t.codeText, removeColor), ' ': undefined, '\\': undefined } : rowTints
-  const frame = look === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
+  const paint = diffPaint(style, String(Math.max(0, ...shown.map(r => r.num))).length)
+  const frame = paint.look === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
   const segments = diffSegments(style, shown, path)
   const flags = wordFlags(shown, segments)
-  const room = columns === undefined ? undefined : columns - 5 - (look === 'card' ? 4 : 0) - (look === 'bar' ? 2 : 0) - gutter - 3
+  const room = codeRoom(paint, columns)
+  const gap = (i: number) => (i > 0 && shown[i]!.hunk !== shown[i - 1]!.hunk ? [<Text key={`gap${i}`} dimColor>{paint.look === 'bar' ? '  ...' : '...'}</Text>] : [])
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
       <Text>
         {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
-        <Text color={addColor} dimColor={added === 0}>{`+${added}`}</Text>
+        <Text color={paint.marks['+']} dimColor={added === 0}>{`+${added}`}</Text>
         <Text> </Text>
-        <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
+        <Text color={paint.marks['-']} dimColor={removed === 0}>{`−${removed}`}</Text>
       </Text>
-      {shown.flatMap((r, i) => {
-        const bg = tints[r.mark]
-        const gap = i > 0 && r.hunk !== shown[i - 1]!.hunk ? [<Text key={`gap${i}`} dimColor>{look === 'bar' ? '  ...' : '...'}</Text>] : []
-        return [...gap, ...visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room).map((part, k) => (
-          <Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
-            {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' || r.mark === '\\' ? '  ' : '▌ '}</Text> : null}
-            <Text dimColor>{`${k || r.mark === '\\' ? ' '.repeat(gutter) : String(r.num).padStart(gutter)} `}</Text>
-            <Text color={color(r.mark)} dimColor={r.mark === ' '}>{r.mark === '\\' ? '  ' : `${r.mark} `}</Text>
-            <Text color={t.codeText}>{drawCode(el, style, part, bg, words[r.mark], `d${i}.${k}`)}</Text>
-          </Box>
-        ))]
-      })}
+      {shown.flatMap((r, i) => [...gap(i), ...lineRows(el, style, paint, r, i, visualRows(tabbed(wordPieces(segments[i]!, flags[i] ?? null)), room))])}
       {rows.length > shown.length && toggle?.folded !== true ? <Text dimColor>{`… +${rows.length - shown.length} lines`}</Text> : null}
       {toggle?.element ?? null}
     </Box>
