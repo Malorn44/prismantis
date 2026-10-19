@@ -167,15 +167,20 @@ const fileHref = (root: string, href: string): string => {
   return local && root !== 'file://' ? `${root}${local[1]}${local[2]}` : href
 }
 
-const pathHref = (reach: Reach, path: string): string | undefined => {
+const absolutePath = (reach: Reach, path: string): string | undefined => {
   const base = path.startsWith('~') ? reach.home : path.startsWith('.') ? reach.cwd : '/'
-  if (!base || reach.fileLinks === null) return undefined
+  if (!base) return undefined
   const parts: string[] = []
   for (const part of `${slashes(base)}/${path.replace(/^~/, '').replace(/(?<=[^/.])\.+$/, '')}`.split('/')) {
     if (part === '..') parts.pop()
     else if (part !== '.' && part !== '') parts.push(part)
   }
-  const target = `/${parts.join('/')}${path.endsWith('/') ? '/' : ''}`
+  return `/${parts.join('/')}${path.endsWith('/') ? '/' : ''}`
+}
+
+const pathHref = (reach: Reach, path: string): string | undefined => {
+  const target = absolutePath(reach, path)
+  if (target === undefined || reach.fileLinks === null) return undefined
   const href = `${reach.fileLinks}${encodeURI(target).replace(/[?#]/g, encodeURIComponent)}`
   return href.length <= LINK_MAX ? href : undefined
 }
@@ -198,9 +203,39 @@ const drawPieces = (el: ElementTable, style: Style, pieces: LinkPiece[]): string
   return hrefs.some(Boolean) ? pieces.map((p, i) => { const href = hrefs[i]; return href ? <el.Link key={`p${i}`} href={href} label={p.text} /> : p.text }) : pieceText(pieces)
 }
 
+const decoded = (text: string): string | undefined => {
+  try {
+    return decodeURIComponent(text)
+  } catch {
+    return undefined
+  }
+}
+
+const linkPath = (root: string, href: string): string | undefined => {
+  const local = root !== 'file://' && href.startsWith(`${root}/`) ? href.slice(root.length) : href.replace(/^file:(\/\/(localhost)?(?=\/))?/i, '')
+  return decoded(local.replace(/[?#].*$/, ''))
+}
+
+const labelPath = (reach: Reach, root: string, label: string): string | undefined => {
+  if (/^file:/i.test(label)) return linkPath(root, fileHref(root, label))
+  if (/^([a-z]:[\\/]|\\\\)/i.test(label)) return label.replace(/\\/g, '/').replace(/^(?=[a-z]:)/i, '/')
+  if (label.startsWith('/')) return label
+  return /^(~|\.{1,2})\//.test(label) ? absolutePath(reach, label) : undefined
+}
+
+const withoutSlash = (path: string | undefined): string | undefined => path?.replace(/(?<=.)\/+$/, '')
+
+const hidesFile = (reach: Reach, n: Extract<Inline, { kind: 'link' }>, href: string): boolean => {
+  const label = n.text.trim().replace(/[.,;:!?]+$/, '')
+  if (!/^file:/i.test(n.href) || label === n.href) return false
+  const root = reach.fileLinks ?? 'file://'
+  const shown = withoutSlash(labelPath(reach, root, label))
+  return shown === undefined || shown !== withoutSlash(linkPath(root, href))
+}
+
 const drawnLink = (n: Extract<Inline, { kind: 'link' }>, reach: Reach): Inline => {
   const href = reach.fileLinks !== null && /^file:/i.test(n.href) ? fileHref(reach.fileLinks, n.href) : n.href
-  if (!isHyperlink(n.href, reach) || encodedLength(href) > LINK_MAX) return { kind: 'text', text: plainLink(n.text, n.href) }
+  if (!isHyperlink(n.href, reach) || encodedLength(href) > LINK_MAX || hidesFile(reach, n, href)) return { kind: 'text', text: plainLink(n.text, n.href) }
   return href === n.href ? n : { ...n, href }
 }
 

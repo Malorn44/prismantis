@@ -66,7 +66,7 @@ const TARGETS: [href: string, linkedWithFileLinks: boolean][] = [
 
 const everyBlock = (links: string) => `${links}\n\n> ${links}\n\n> [!NOTE]\n> ${links}\n\n- x\n  - ${links}\n\n| a |\n|---|\n| ${links} |\n\nn[^a]\n\n[^a]: ${links}`
 
-const targetLinks = TARGETS.map(([href], i) => `[t${i}](${href})`).join(' ')
+const targetLinks = TARGETS.map(([href]) => `[${href}](${href})`).join(' ')
 
 test('only web links in a reply are clickable, in every block, while file links are off', async $ => {
   const ui = await $.ui.mount(reply(everyBlock(targetLinks)))
@@ -75,13 +75,24 @@ test('only web links in a reply are clickable, in every block, while file links 
   expect(hrefs.filter(h => h !== 'https://a.dev')).toEqual([])
 })
 
-test('with file links on, only web and file links in a reply are clickable, file links as written, in every block', async ($, on) => {
+test('with file links on, only web links and file links labelled with their own address are clickable, as written, in every block', async ($, on) => {
   claudeAt(on, '2.1.289')
   mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me' })
-  if (!(await linksHttp($.ui.mount(reply('[x](file:///x)'))))) return
+  if (!(await linksHttp($.ui.mount(reply('[/x](file:///x)'))))) return
   const ui = await $.ui.mount(reply(everyBlock(targetLinks)))
   const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
   const allowed = TARGETS.filter(([, linked]) => linked).map(([href]) => href)
   expect(hrefs).toEqual(Array.from({ length: 6 }, () => allowed).flat())
+  await ui.unmount()
+})
+
+test('with file links on, a file link named anything but its own path draws as text with its target, in every block', async ($, on) => {
+  claudeAt(on, '2.1.289')
+  mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me' })
+  if (!(await linksHttp($.ui.mount(reply('[/x](file:///x)'))))) return
+  const ui = await $.ui.mount(reply(everyBlock(TARGETS.map(([href], i) => `[t${i}](${href})`).join(' '))))
+  const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
+  expect(hrefs).toEqual(Array.from({ length: 6 }, () => 'https://a.dev'))
+  expect(await ui.find({ type: 'Text', text: /^t1 \(file:\/\/\/Applications\/Calculator\.app\)$/ })).toBeDefined()
   await ui.unmount()
 })
