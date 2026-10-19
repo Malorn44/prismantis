@@ -1464,11 +1464,19 @@ const diffRow = (el: ElementTable, style: Style, cards: RenderElement[], below: 
   </el.Box>
 )
 
+const editedIntoBeing = (output: unknown, rows: DiffLine[]): WholeFile | undefined => {
+  const out = output as { filePath?: unknown; oldString?: unknown; originalFile?: unknown }
+  const fresh = out.oldString === '' && (out.originalFile === null || out.originalFile === '') && rows.every(r => r.mark === '+' || r.mark === '\\')
+  return fresh && typeof out.filePath === 'string' ? { kind: 'created', path: out.filePath, lines: rows.filter(r => r.mark === '+').map(r => r.text) } : undefined
+}
+
 export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, fold: Fold, id: string, columns?: number): RenderElement | undefined => {
+  const budget = { left: DIFF_EXTRA }
   const rows = diffLines(output)
   if (rows === undefined) return undefined
+  const made = editedIntoBeing(output, rows)
   const path = (output as { filePath?: unknown }).filePath
-  return diffRow(el, style, [diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined, { left: DIFF_EXTRA }, columns)], false)
+  return diffRow(el, style, [made ? wholeFileCard(el, style, made, fold, id, '', budget, columns) : diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined, budget, columns)], false)
 }
 
 type WholeFile = { kind: 'created' | 'deleted'; path: string; lines: string[] }

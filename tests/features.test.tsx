@@ -1236,12 +1236,56 @@ test('failed shell edits, diffs the card cannot read and tool rows off go to the
   }
 })
 
+const ts = (n: number) => Array.from({ length: n }, (_, i) => `export const n${i + 1} = ${i + 1}`)
 const rowsOf = async (ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text: string }[]> }) => {
   const blocks = (await ui.findAll({ type: 'Text' })).map(r => r.text.split('\n').map(l => l.trimEnd())).filter(lines => lines.every(l => /^ *\d+ ( |[+-] )/.test(l)))
   const written = blocks.reduce<string[]>((a, b) => (b.length > a.length ? b : a), [])
   return [...written, ...(await ui.findAll({ type: 'Box' })).filter(b => /^d\d+$/.test(b.key ?? '')).map(b => b.text)]
 }
 const numberedRows = (lines: string[], mark?: '+' | '-') => lines.map((l, i) => `${String(i + 1).padStart(String(lines.length).length)}${mark ? ` ${mark} ` : '  '}${l}`)
+
+const editMade = (filePath: string, body: string[]) => ({
+  filePath, oldString: '', newString: `${body.join('\n')}\n`, originalFile: '', userModified: false, replaceAll: false,
+  structuredPatch: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: body.length, lines: body.map(l => `+${l}`) }],
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`an Edit that makes a new file draws its first lines as added diff lines under a Created header on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    const body = ts(12)
+    const ui = await $.ui.mount(editResult(surface, 'Edit', editMade('/home/demo/app/made.ts', body)))
+    expect(await ui.find({ type: 'Text', text: /^Created made\.ts \(12 lines\)$/ })).toBeDefined()
+    expect(await rowsOf(ui)).toEqual(numberedRows(body.slice(0, 10), '+'))
+    expect((await ui.find({ type: 'Box', text: /^ 1 \+ export const n1 = 1$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
+    expect((await ui.findAll({ type: 'Text', text: /^\+ $/ })).map(m => m.props.color)).toEqual(Array(10).fill(t.diffAdded))
+    expect(await ui.find({ type: 'Text', text: /^\+12$/ })).toBeUndefined()
+    expect((await ui.find({ key: 'fold' }))?.props).toMatchObject({ variant: 'secondary', label: '+2 more lines' })
+    await ui.press({ key: 'fold' })
+    expect((await rowsOf(ui)).length).toBe(12)
+    expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
+test('an Edit that makes a file with no newline at its end is still a new file, not a diff', async ($, on) => {
+  engine(on)
+  const made = { ...editMade('/tmp/made.ts', ['a', 'b']), newString: 'a\nb' }
+  made.structuredPatch[0]!.lines.push('\\ No newline at end of file')
+  const ui = await $.ui.mount(editResult('terminal', 'Edit', made))
+  expect(await ui.find({ type: 'Text', text: /^Created \/tmp\/made\.ts \(2 lines\)$/ })).toBeDefined()
+  expect(await rowsOf(ui)).toEqual(['1 + a', '2 + b'])
+  expect(await ui.find({ type: 'Text', text: /^\+2$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an Edit into a file that had text stays a diff card, even when it only adds lines', async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(editResult('terminal', 'Edit', { ...editMade('/tmp/kept.ts', ['b']), oldString: 'a', originalFile: 'a\n' }))
+  expect(await ui.find({ type: 'Text', text: /^\+1$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Created / })).toBeUndefined()
+  await ui.unmount()
+})
 
 const madeFile = (name: string, body: string[]) =>
   ({ filePath: `/home/demo/app/${name}`, hunks: body.length ? [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: body.length, lines: body.map(l => `+${l}`) }] : [], created: true as const })
