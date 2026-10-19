@@ -206,9 +206,9 @@ When tables, diagrams and figures follow each other, they share a row and wrap o
 - **Whole replies:** replies with more than one block, or any Hebrew or Arabic, end with `⧉ copy reply`, which copies the reply as Claude wrote it. Selecting right-to-left text on screen copies letters in drawn order, not reading order.
 - **No mouse:** `/prismantis copy` copies the last reply, `/prismantis copy code` its last code block.
 
-`copyButtonStyle` picks where the buttons sit. `inline`, the default, is the look above. `hover` hides them until the pointer is on their block: a block's buttons float over its top-right corner, or from its left edge on a block narrower than they are, and the reply's over its bottom-right corner, so they take no line and nothing moves when they show. ctrl+x tab does not reach a hidden button, and the mobile app, which has no pointer, draws them inline.
+`copyButtonStyle` picks where the buttons sit. `inline`, the default, is the look above. `hover` puts a dim ⧉ beside each block's first row instead, at its left on a right-to-left block, and one in the reply's bottom-right corner for the whole reply. Pointing at a ⧉ draws its buttons over it, so they take no line and nothing moves when they show; the pointer on the block itself shows nothing. ctrl+x tab does not reach a hidden button, and the mobile app, which has no pointer, draws them inline.
 
-![copyButtonStyle hover: a table's ⧉ md and ⧉ art buttons floating over the top-right of its border while the pointer is on it](docs/copy/hover.png)
+![copyButtonStyle hover: at rest a table, a bash block and the reply each show a dim ⧉; with the pointer on the table's ⧉, its ⧉ md, ⧉ art and ⧉ html buttons draw over the marker and the end of the header row](docs/copy/hover.png)
 
 `⧉ html` shows in a local macOS terminal or a Linux graphical session. macOS needs nothing extra. Linux needs [CopyQ](https://copyq.readthedocs.io/en/stable/installation.html) running (see its [Wayland caveats](https://copyq.readthedocs.io/en/stable/known-issues.html#on-linux-some-features-do-not-work-under-wayland)). On Ubuntu:
 

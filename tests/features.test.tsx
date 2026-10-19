@@ -2358,6 +2358,7 @@ test('/prismantis setup walks every step, saves each pick through config, and ca
   expect(steps.map(s => s.key)).toEqual(['theme', 'tableStyle', 'taskStyle', 'headingStyle', 'copyButtonStyle', 'promptStyle', 'clock', 'toolStyle', 'toolOutput', 'diffStyle', 'pieStyle'])
   for (const step of steps.slice(1)) for (const value of step.options) expect(resolveStyle({ [step.key]: value })[step.key]).toBe(value)
   expect(steps[0]!.options).toEqual(PRESET_NAMES)
+  expect(steps.find(s => s.key === 'copyButtonStyle')?.note).toContain('`hover` puts a dim ⧉ beside each block instead and shows its buttons only while the pointer is on that ⧉')
   expect((await setupRun($, 'setup')).text).toBe(SETUP_PANE_OPENED)
   expect((await setupRun($, 'setup theme')).text).toBe(setupText(setupParts(PRESET_NAMES, 0)))
   expect((await setupRun($, 'setup theme nord')).text).toBe(`Theme set to nord.\n\n${setupText(setupParts(PRESET_NAMES, 1))}`)
