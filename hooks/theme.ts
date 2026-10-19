@@ -1,7 +1,8 @@
 import type { PluginOptions } from 'claude-code'
 
 import type { ClipboardBackend } from './clipboard'
-import { PRESET_NAMES, PRESETS } from './presets'
+import type { PresetName } from './presets'
+import { PRESET_BACKGROUNDS, PRESET_NAMES, PRESETS } from './presets'
 import type { Shape, Terminal } from './rtl'
 import { TERMINALS } from './rtl'
 
@@ -16,6 +17,7 @@ export type Clock = 'off' | '24h' | '12h'
 
 export type Style = {
   theme: Theme
+  background?: string
   headingStyle: 'bold' | 'underline' | 'uppercase' | 'banner'
   tableStyle: 'box' | 'rules' | 'grid' | 'minimal'
   taskStyle: 'checks' | 'ticks' | 'box' | 'progress'
@@ -64,7 +66,8 @@ export const pickTheme = (value: unknown, random = Math.random): string => {
 }
 
 export const resolveStyle = (options: PluginOptions): Style => {
-  const base: Theme = (PRESETS as Record<string, Theme>)[String(options.theme)] ?? PRESETS['catppuccin-mocha']
+  const preset = (PRESET_NAMES as string[]).includes(String(options.theme)) ? (String(options.theme) as PresetName) : 'catppuccin-mocha'
+  const base: Theme = PRESETS[preset]
   const fromFields = Object.fromEntries(
     TOKENS.filter(k => isColor(options[`${k}Color`])).map(k => [k, String(options[`${k}Color`]).trim()]),
   )
@@ -73,6 +76,7 @@ export const resolveStyle = (options: PluginOptions): Style => {
 
   return {
     theme: { ...base, ...fromFields },
+    ...(PRESET_BACKGROUNDS[preset] ? { background: PRESET_BACKGROUNDS[preset] } : {}),
     headingStyle: pick(options.headingStyle, ['bold', 'underline', 'uppercase', 'banner'] as const, 'banner'),
     tableStyle: pick(options.tableStyle, ['box', 'rules', 'grid', 'minimal'] as const, 'box'),
     taskStyle: pick(options.taskStyle, ['checks', 'ticks', 'box', 'progress'] as const, 'checks'),

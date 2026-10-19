@@ -111,3 +111,21 @@ export const PRESETS = {
 
 export type PresetName = keyof typeof PRESETS
 export const PRESET_NAMES = Object.keys(PRESETS) as PresetName[]
+
+export const PRESET_BACKGROUNDS: Partial<Record<PresetName, string>> = {
+  'catppuccin-mocha': '#1e1e2e',
+  'catppuccin-latte': '#eff1f5',
+  dracula: '#282a36',
+  nord: '#2e3440',
+  'tokyo-night': '#1a1b26',
+  'gruvbox-dark': '#282828',
+  'gruvbox-light': '#fbf1c7',
+  'rose-pine': '#191724',
+  'rose-pine-dawn': '#faf4ed',
+  everforest: '#2d353b',
+  'github-dark': '#0d1117',
+  'github-light': '#ffffff',
+  'one-dark': '#282c34',
+  'solarized-dark': '#002b36',
+  'solarized-light': '#fdf6e3',
+}

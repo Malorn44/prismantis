@@ -1327,13 +1327,18 @@ const visualRows = (pieces: Piece[], room: number | undefined): Piece[][] => {
   return room === undefined || room < DIFF_ROOM || width(text) <= room ? [pieces] : splitRows(pieces, rowStarts(text, room))
 }
 
-const drawCode = ({ Text }: ElementTable, style: Style, pieces: Piece[], bg: string | undefined, word: string | undefined, key: string): RenderNode[] | string => {
+const lift = (color: string | undefined, band: string | undefined) => {
+  const lifted = band && color ? onTint(color, band) : undefined
+  return lifted && lifted !== color ? { hover: { color: lifted } } : {}
+}
+
+const drawCode = ({ Text }: ElementTable, style: Style, pieces: Piece[], bg: string | undefined, word: string | undefined, key: string, band?: string): RenderNode[] | string => {
   if (!pieces.length) return ' '
   return pieces.map((p, j) => {
     const lit = p.word && word !== undefined
     if (!lit && !p.color && !p.italic) return p.text
     const on = lit ? word : bg
-    return <Text key={`${key}.${j}`} color={on ? onTint(p.color ?? style.theme.codeText, on) : p.color} italic={p.italic} {...(lit ? { backgroundColor: word } : {})}>{p.text}</Text>
+    return <Text key={`${key}.${j}`} color={on ? onTint(p.color ?? style.theme.codeText, on) : p.color} italic={p.italic} {...(lit ? { backgroundColor: word } : lift(p.color, band))}>{p.text}</Text>
   })
 }
 
@@ -1347,9 +1352,16 @@ const spend = (budget: Budget, cost: number): boolean => {
 
 const filePieces = (style: Style, path: string | undefined, lines: string[]): Piece[][] => fileSegments(style, path, lines).map(segs => tabbed(wordPieces(segs, null)))
 
-const numberedLine = (el: ElementTable, style: Style, label: string, pieces: Piece[], key: string): RenderElement[] => [
-  <el.Text key={`${key}.g`} color={style.theme.codeComment} dimColor>{label}</el.Text>,
-  <el.Text key={`${key}.c`} color={style.theme.codeText}>{drawCode(el, style, pieces, undefined, undefined, `${key}.c`)}</el.Text>,
+const onBand = (color: string | undefined, band: string | undefined) => {
+  const lifted = band && color ? onTint(color, band) : undefined
+  return lifted ? { hover: { color: lifted } } : {}
+}
+
+const muted = (style: Style, band: string | undefined) => onBand(style.theme.codeComment ?? style.theme.codeText, band)
+
+const numberedLine = (el: ElementTable, style: Style, label: string, pieces: Piece[], key: string, band?: string): RenderElement[] => [
+  <el.Text key={`${key}.g`} color={style.theme.codeComment} dimColor {...muted(style, band)}>{label}</el.Text>,
+  <el.Text key={`${key}.c`} color={style.theme.codeText} {...lift(style.theme.codeText, band)}>{drawCode(el, style, pieces, undefined, undefined, `${key}.c`, band)}</el.Text>,
 ]
 
 const partCost = (part: Piece[]): number => Math.max(1, part.reduce((m, p) => m + (p.color || p.italic || p.word ? 2 : 1), 0))
@@ -1585,6 +1597,33 @@ const PREVIEW_LINES = 10
 
 const lineCount = (n: number): string => (n === 0 ? 'empty' : `${n} ${n === 1 ? 'line' : 'lines'}`)
 
+const BAND_SHARE = 0.12
+const BAND_FLOOR = 0.06
+export const BAND_STEP = 1.2
+const BAND_MOST = 0.4
+
+const previewInks = (theme: Theme): string[] =>
+  [theme.codeText, ...Object.values(PRISM_COLORS).map(k => theme[k])].filter((c): c is string => c !== undefined && HEX.test(c))
+
+const stepped = (share: number, by: number): number => Math.round((share + by) * 100) / 100
+
+const bandFrom = (background: string, text: string): string => {
+  let share = 0.02
+  while (share < BAND_MOST && contrast(tint(background, text, share)!, background) < BAND_STEP) share = stepped(share, 0.01)
+  return tint(background, text, share)!
+}
+
+export const previewBand = (theme: Theme, background?: string): string | undefined => {
+  const text = theme.codeText
+  if (!text || !HEX.test(text)) return undefined
+  if (background && HEX.test(background)) return bandFrom(background, text)
+  const base = contrast(text, '#000000') >= contrast(text, '#ffffff') ? '#000000' : '#ffffff'
+  const inks = previewInks(theme).filter(c => contrast(c, base) >= TEXT_CONTRAST)
+  let share = BAND_SHARE
+  while (share > BAND_FLOOR && inks.some(c => contrast(c, tint(base, text, share)!) < TEXT_CONTRAST)) share = stepped(share, -0.01)
+  return tint(base, text, share)
+}
+
 const PREVIEW_ROW = 4
 const PLAIN_LINE = 7
 
@@ -1594,30 +1633,30 @@ const previewRows = (pieces: Piece[], text: string, room: number | undefined, bu
   return visualRows(tabbed(plainParts(text)[0]!), room)
 }
 
-const previewText = (el: ElementTable, style: Style, path: string, shown: string[], key: string, columns: number | undefined, budget: Budget): RenderNode[] => {
+const previewText = (el: ElementTable, style: Style, path: string, shown: string[], key: string, band: string | undefined, columns: number | undefined, budget: Budget): RenderNode[] => {
   const gutter = String(shown.length).length
   const room = columns === undefined ? undefined : columns - 5 - gutter - 2
   return filePieces(style, path, shown).flatMap((pieces, i) =>
     previewRows(pieces, shown[i]!, room, budget).flatMap((part, k) => [
       ...(i || k ? ['\n'] : []),
-      ...numberedLine(el, style, k ? ' '.repeat(gutter + 2) : `${String(i + 1).padStart(gutter)}  `, part, `${key}.${i}.${k}`),
+      ...numberedLine(el, style, k ? ' '.repeat(gutter + 2) : `${String(i + 1).padStart(gutter)}  `, part, `${key}.${i}.${k}`, band),
     ]))
 }
 
-const wholeHead = (el: ElementTable, style: Style, file: WholeFile): RenderElement => (
+const wholeHead = (el: ElementTable, style: Style, file: WholeFile, band?: string): RenderElement => (
   <el.Text key="head">
-    {file.kind === 'created' ? 'Created ' : 'Deleted '}
-    <el.Text color={style.theme.path}>{shortPath(style, file.path)}</el.Text>
-    <el.Text dimColor>{` (${lineCount(file.lines.length)})`}</el.Text>
+    {band ? <el.Text {...onBand(style.theme.codeText, band)}>{'Created '}</el.Text> : file.kind === 'created' ? 'Created ' : 'Deleted '}
+    <el.Text color={style.theme.path} {...lift(style.theme.path, band)}>{shortPath(style, file.path)}</el.Text>
+    <el.Text dimColor {...muted(style, band)}>{` (${lineCount(file.lines.length)})`}</el.Text>
   </el.Text>
 )
 
-type RowsOf = { marked: boolean; press: boolean; columns: number | undefined; budget: Budget }
+type RowsOf = { marked: boolean; press: boolean; band: string | undefined; columns: number | undefined; budget: Budget }
 
-const wholeRows = (el: ElementTable, style: Style, file: WholeFile, shown: number, { marked, press, columns, budget }: RowsOf): RenderElement | null => {
+const wholeRows = (el: ElementTable, style: Style, file: WholeFile, shown: number, { marked, press, band, columns, budget }: RowsOf): RenderElement | null => {
   const lines = file.lines.slice(0, shown)
   if (lines.length === 0) return null
-  if (!marked) return <el.Text key="rows">{previewText(el, style, file.path, lines, 'rows', columns, budget)}</el.Text>
+  if (!marked) return <el.Text key="rows">{previewText(el, style, file.path, lines, 'rows', band, columns, budget)}</el.Text>
   const diff = lines.map((text, i): DiffLine => ({ mark: file.kind === 'created' ? '+' : '-', num: i + 1, text, hunk: 0 }))
   return press ? diffText(el, style, diff, file.path, columns, budget) : <el.Box key="rows" flexDirection="column">{diffBody(el, style, diff, file.path, columns, budget)}</el.Box>
 }
@@ -1630,10 +1669,10 @@ const wholeToggle = (fold: Fold, file: WholeFile, head: RenderElement, id: strin
   return n > 0 ? fold(id, n, `fold${key}`, { label: `show ${lineCount(n)}`, face: () => head }) : null
 }
 
-const wholeBody = (el: ElementTable, style: Style, file: WholeFile, head: RenderElement, rows: RenderElement | null, toggle: Toggle): (RenderElement | null)[] | RenderElement => {
+const wholeBody = (el: ElementTable, style: Style, file: WholeFile, head: RenderElement, rows: RenderElement | null, toggle: Toggle, band: string | undefined): (RenderElement | null)[] | RenderElement => {
   const press = style.pressPreview === true ? toggle?.around : undefined
-  const hover = { inverse: false }
-  if (press && file.kind === 'created') return press(<el.Text key="all">{head}{rows ? ['\n', rows] : null}</el.Text>, hover)
+  const hover = { inverse: false, ...(band ? { backgroundColor: band } : {}) }
+  if (press && file.kind === 'created') return press(<el.Text key="all">{wholeHead(el, style, file, band)}{rows ? ['\n', rows] : null}</el.Text>, hover)
   return [toggle?.faced ? toggle.element : head, rows && press ? press(rows, hover) : rows]
 }
 
@@ -1644,11 +1683,12 @@ const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fo
   const toggle = wholeToggle(fold, file, head, id, key)
   const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : created ? PREVIEW_LINES : 0)
   const press = style.pressPreview === true && toggle?.around !== undefined
-  const rows = wholeRows(el, style, file, shown, { marked, press, columns, budget })
+  const band = press && !marked ? previewBand(style.theme, style.background) : undefined
+  const rows = wholeRows(el, style, file, shown, { marked, press, band, columns, budget })
   const rest = n > shown && (toggle ? !toggle.folded : created)
   return (
     <el.Box key={`file${key}`} flexDirection="column">
-      {wholeBody(el, style, file, head, rows, toggle)}
+      {wholeBody(el, style, file, head, rows, toggle, band)}
       {rest ? <el.Text key="rest" dimColor>{`… +${n - shown} lines`}</el.Text> : null}
       {toggle && !toggle.faced ? toggle.element : null}
     </el.Box>

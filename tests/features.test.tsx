@@ -5,11 +5,11 @@ import type { TestBody } from 'claude-code/testing'
 import { clockText, endedAt, sentAt } from '../hooks/clock'
 import { FIGURE_HINT } from '../hooks/figure'
 import { parse } from '../hooks/markdown'
-import { PRESET_NAMES, PRESETS } from '../hooks/presets'
+import { PRESET_BACKGROUNDS, PRESET_NAMES, PRESETS } from '../hooks/presets'
 import { RANDOM_THEMES, pickTheme, resolveStyle } from '../hooks/theme'
 import { ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, setupParts, setupSteps, setupText } from '../hooks/help'
 import type { Theme } from '../hooks/theme'
-import { EDIT_NOTES, PRISM_COLORS, bashEdits, columnWidths, contrast, describeShell, diffLines, diffTint, fullHue, movesTree, onTint, pathLanguage, tint, wordTint, errorReason, formatDuration, groupSummary, isReadOnlyCall, programsOf, refusalReason, rememberCall, shortTarget, shortenPaths, withoutBashEdits } from '../hooks/render'
+import { EDIT_NOTES, PRISM_COLORS, bashEdits, columnWidths, contrast, describeShell, diffLines, diffTint, fullHue, movesTree, onTint, pathLanguage, previewBand, tint, wordTint, errorReason, formatDuration, groupSummary, isReadOnlyCall, programsOf, refusalReason, rememberCall, shortTarget, shortenPaths, withoutBashEdits } from '../hooks/render'
 import { claudeAt } from './claude-version'
 
 const t = PRESETS['catppuccin-mocha']
@@ -1359,14 +1359,16 @@ test('an opened 450-line new file shows 400 lines, counts the rest and stays wel
   }
 })
 
-test('the click-anywhere preview of a new file never inverts on hover and keeps the gutter dim', async ($, on) => {
+test('the click-anywhere preview of a new file lights a theme band on hover, never inverse, and keeps the gutter dim', async ($, on) => {
   engine(on)
   claudeAt(on, '2.1.295')
   if (!(await takesTextButtons($))) return
   const ui = await $.ui.mount(editResult('terminal', 'Write', writeNew('/tmp/new.ts', ts(25))))
   await drewItself(ui)
   const button = await pressOf(ui)
-  expect(hoverOf(button!)).toEqual({ inverse: false })
+  const band = previewBand(t, PRESET_BACKGROUNDS['catppuccin-mocha'])!
+  expect(hoverOf(button!)).toEqual({ inverse: false, backgroundColor: band })
+  expect(hoverOf(nodesOf(button).find(n => n.type === 'Text' && n.children?.[0] === 'Created ')!)).toEqual({ color: onTint(t.codeText, band) })
   const gutters = nodesOf(button).filter(n => n.type === 'Text' && n.props?.dimColor === true && /^ ?\d+ {2}$/.test(String(n.children?.[0])))
   expect(gutters.length).toBe(10)
   expect((await ui.find({ key: 'fold' }))?.props.hover).toBeUndefined()
@@ -1700,6 +1702,38 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'fold1' })
     expect((await rowsOf(ui)).slice(10)).toEqual(['1 - alpha', '2 - beta'])
     expect((await ui.find({ key: 'fold1' }))?.props.label).toBe('show less')
+    await ui.unmount()
+  })
+}
+
+const PREVIEW_SAMPLE = [
+  '// keeps the old name working',
+  'export const greet = (name: string): string => `hi ${name}`',
+  'const limit = 42, ok = true',
+  "type Item = { id: number; label: 'a' | 'b' }",
+  'function size(items: Item[]) { return items.length }',
+  'class Store { items: Item[] = [] }',
+  'const re = /^[a-z]+$/',
+]
+
+for (const name of PRESET_NAMES) {
+  test(`every token of a click-anywhere preview reads at 4.5:1 on its hover band, and keeps its theme color at rest, in ${name}`, { options: { theme: name } }, async ($, on) => {
+    engine(on)
+    claudeAt(on, '2.1.295')
+    const theme: Theme = PRESETS[name]
+    const band = previewBand(theme, PRESET_BACKGROUNDS[name])
+    if (!(await takesTextButtons($))) return
+    const ui = await $.ui.mount(editResult('terminal', 'Write', writeNew('/tmp/sample.ts', [...PREVIEW_SAMPLE, ...ts(8)])))
+    await drewItself(ui)
+    const button = await pressOf(ui)
+    expect(hoverOf(button!)).toEqual(band ? { inverse: false, backgroundColor: band } : { inverse: false })
+    const inks = nodesOf(button).filter(n => n.type === 'Text' && typeof n.props?.color === 'string')
+    const allowed = new Set(Object.values(PRISM_COLORS).map(k => theme[k]).concat(theme.codeText))
+    expect(inks.filter(n => !allowed.has(n.props!.color as string)).map(n => n.props!.color)).toEqual([])
+    if (band) {
+      expect(inks.map(n => hoverOf(n)?.color ?? (n.props!.color as string)).filter(c => contrast(c, band) < 4.5)).toEqual([])
+      expect(inks.length).toBeGreaterThan(20)
+    } else expect(inks.filter(n => hoverOf(n)).length).toBe(0)
     await ui.unmount()
   })
 }

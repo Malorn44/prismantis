@@ -1,26 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
-import { PRESETS } from '../hooks/presets'
-import { contrast, diffTint } from '../hooks/render'
+import { PRESET_BACKGROUNDS, PRESETS } from '../hooks/presets'
+import { BAND_STEP, contrast, diffTint, onTint, previewBand } from '../hooks/render'
 import type { Theme } from '../hooks/theme'
 
-const BACKGROUNDS: Record<string, string> = {
-  'catppuccin-mocha': '#1e1e2e',
-  'catppuccin-latte': '#eff1f5',
-  dracula: '#282a36',
-  nord: '#2e3440',
-  'tokyo-night': '#1a1b26',
-  'gruvbox-dark': '#282828',
-  'gruvbox-light': '#fbf1c7',
-  'rose-pine': '#191724',
-  'rose-pine-dawn': '#faf4ed',
-  everforest: '#2d353b',
-  'github-dark': '#0d1117',
-  'github-light': '#ffffff',
-  'one-dark': '#282c34',
-  'solarized-dark': '#002b36',
-  'solarized-light': '#fdf6e3',
-}
+const BACKGROUNDS: Record<string, string | undefined> = PRESET_BACKGROUNDS
 
 const FLOOR: Record<string, number> = { rule: 1.05, tableRule: 1.05, diagram: 3, codeComment: 3 }
 
@@ -65,6 +49,18 @@ test('diff text stays at WCAG AA on the added and removed tints of every preset'
       const ratio = contrast(theme.codeText!, diffTint(theme.codeText, color)!)
       if (ratio < 4.5) failures.push(`${name} ${color} ${ratio.toFixed(2)}`)
     }
+  }
+  expect(failures).toEqual([])
+})
+
+test('the hover band under a new file\'s preview is a visible step from every preset\'s background, and its code text still reads at 4.5:1', async () => {
+  const failures: string[] = []
+  for (const { name, theme, bg } of presets()) {
+    const band = previewBand(theme, bg)!
+    const step = contrast(band, bg)
+    if (step < BAND_STEP || step > BAND_STEP + 0.1) failures.push(`${name} band ${band} is ${step.toFixed(2)}:1 from ${bg}`)
+    const ink = onTint(theme.codeText, band)!
+    if (contrast(ink, band) < 4.5) failures.push(`${name} code text ${ink} on ${band} ${contrast(ink, band).toFixed(2)}`)
   }
   expect(failures).toEqual([])
 })
