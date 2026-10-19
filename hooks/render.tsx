@@ -1,9 +1,9 @@
-import type { ElementTable, RenderElement, RenderNode } from 'claude-code'
+import type { ElementTable, RenderElement, RenderNode, TextHoverProps } from 'claude-code'
 
 import { tableHtml, tableText } from './html'
 import type { Block, Inline } from './markdown'
 import { mathOf } from './latex'
-import { displayText, inlineText, isWebLink, texText } from './markdown'
+import { CONTROL, displayText, inlineText, isWebLink, texText } from './markdown'
 import type { Flow } from './rtl'
 import { ROW_MARK, ROW_MARK_TEXT, WALL, commentTail, commentVisual, containsRtl, flow, hasRtl, listMarker, terminalLine } from './rtl'
 import type { Style, Theme } from './theme'
@@ -758,8 +758,8 @@ const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind
 
 export type CopyButton = (text: string | (() => string), key: string, label?: string, html?: () => string) => RenderElement | null
 export type Drawn = Map<number, { element?: RenderElement; art?: string; note?: string }>
-export type FoldLook = { label?: string }
-export type Fold = (id: string, hidden: number, key: string, look?: FoldLook) => { folded: boolean; element: RenderElement } | null
+export type FoldLook = { label?: string; face?: (folded: boolean) => RenderElement }
+export type Fold = (id: string, hidden: number, key: string, look?: FoldLook) => { folded: boolean; element: RenderElement; faced: boolean; around?: (rows: RenderElement, hover: TextHoverProps) => RenderElement } | null
 export type Tip = (note: number) => (() => void) | undefined
 
 export const instanceKey = (id: string): string => {
@@ -1113,7 +1113,7 @@ const hunkRows = (lines: unknown[], oldStart: number, newStart: number, hunk: nu
       if (mark === ' ') o++
       num = n++
     }
-    rows.push({ mark, num, text: l.slice(1), hunk })
+    rows.push({ mark, num, text: l.slice(1).replace(CONTROL, ''), hunk })
   }
   return rows
 }
@@ -1342,8 +1342,8 @@ const spend = (budget: Budget, cost: number): boolean => {
 
 const partCost = (part: Piece[]): number => Math.max(1, part.reduce((m, p) => m + (p.color || p.italic || p.word ? 2 : 1), 0))
 
-const lineCost = (parts: Piece[][], bar: boolean, note: boolean): number =>
-  parts.reduce((n, part) => n + (bar ? 8 : 6) + partCost(part), 0) - (note ? 0 : bar ? 9 : 7)
+const lineCost = (parts: Piece[][], bar: boolean, note: boolean, row = 0): number =>
+  parts.reduce((n, part) => n + (bar ? 8 : 6) + row + partCost(part), 0) - (note ? 0 : bar ? 9 : 7)
 
 const plainParts = (text: string): Piece[][] => [text ? [{ text, italic: false, word: false }] : []]
 
@@ -1382,7 +1382,7 @@ const lineRows = (el: ElementTable, style: Style, paint: DiffPaint, r: DiffLine,
   const bg = paint.tints[r.mark]
   return parts.map((part, k) => (
     <el.Box key={k ? `d${i}.${k}` : `d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
-      {lineText(el, style, paint, r, `d${i}.${k}`, k, part)}
+      {lineText(el, style, paint, r, `d${i}.${k}`, k, part, 0, false)}
     </el.Box>
   ))
 }
@@ -1405,27 +1405,45 @@ const diffShape = (style: Style, shown: DiffLine[], path: string | undefined, co
 
 const gapRow = (el: ElementTable, paint: DiffPaint, key: string): RenderElement => <el.Text key={key} dimColor>{paint.look === 'bar' ? '  ...' : '...'}</el.Text>
 
-const afforded = (line: ShapedLine, paint: DiffPaint, budget: Budget): ShapedLine => {
+const TEXT_ROW = 2
+
+const afforded = (line: ShapedLine, paint: DiffPaint, budget: Budget, row: number): ShapedLine => {
   const gap = line.gap && spend(budget, 2)
-  if (spend(budget, lineCost(line.parts, paint.look === 'bar', line.r.mark === '\\'))) return { ...line, gap }
+  if (spend(budget, lineCost(line.parts, paint.look === 'bar', line.r.mark === '\\', row))) return { ...line, gap }
   return { ...line, gap, parts: line.r.mark === '\\' ? [] : plainParts(line.r.text) }
 }
 
 const diffBody = (el: ElementTable, style: Style, shown: DiffLine[], path: string | undefined, columns: number | undefined, budget: Budget): RenderElement[] => {
   const { paint, lines } = diffShape(style, shown, path, columns)
-  return lines.map(line => afforded(line, paint, budget)).flatMap(({ r, i, parts, gap }) => [...(gap ? [gapRow(el, paint, `gap${i}`)] : []), ...lineRows(el, style, paint, r, i, parts)])
+  return lines.map(line => afforded(line, paint, budget, 0)).flatMap(({ r, i, parts, gap }) => [...(gap ? [gapRow(el, paint, `gap${i}`)] : []), ...lineRows(el, style, paint, r, i, parts)])
 }
 
-const lineText = (el: ElementTable, style: Style, paint: DiffPaint, r: DiffLine, key: string, k: number, part: Piece[]): RenderNode[] => {
+const lineText = (el: ElementTable, style: Style, paint: DiffPaint, r: DiffLine, key: string, k: number, part: Piece[], pad: number, fill = true): RenderNode[] => {
   const { Text } = el
   const bg = paint.tints[r.mark]
+  const on = bg && fill ? { backgroundColor: bg } : {}
   const code = style.theme.codeText
   return [
-    ...(paint.look === 'bar' ? [<Text key={`${key}.b`} color={paint.marks[r.mark]}>{barOf(r.mark)}</Text>] : []),
-    <Text key={`${key}.n`} dimColor>{numberOf(paint, r, k)}</Text>,
-    <Text key={`${key}.m`} color={paint.marks[r.mark]} dimColor={r.mark === ' '}>{markOf(r.mark)}</Text>,
-    <Text key={`${key}.c`} color={bg ? onTint(code, bg) : code}>{drawCode(el, style, part, bg, paint.words[r.mark], key)}</Text>,
+    ...(paint.look === 'bar' ? [<Text key={`${key}.b`} color={paint.marks[r.mark]} {...on}>{barOf(r.mark)}</Text>] : []),
+    <Text key={`${key}.n`} dimColor {...on}>{numberOf(paint, r, k)}</Text>,
+    <Text key={`${key}.m`} color={paint.marks[r.mark]} dimColor={r.mark === ' '} {...on}>{markOf(r.mark)}</Text>,
+    <Text key={`${key}.c`} color={bg ? onTint(code, bg) : code} {...on}>{drawCode(el, style, part, bg, paint.words[r.mark], key)}</Text>,
+    ...(bg && pad > 0 ? [<Text key={`${key}.p`} {...on}>{' '.repeat(pad)}</Text>] : []),
   ]
+}
+
+const diffText = (el: ElementTable, style: Style, shown: DiffLine[], path: string | undefined, columns: number | undefined, budget: Budget): RenderElement => {
+  const { paint, room, lines } = diffShape(style, shown, path, columns)
+  const kept = lines.map(line => afforded(line, paint, budget, TEXT_ROW))
+  const lead = (paint.look === 'bar' ? 2 : 0) + paint.gutter + 3
+  const used = (part: Piece[]) => lead + (part.length ? width(part.map(p => p.text).join('')) : 1)
+  const fits = room !== undefined && room >= DIFF_ROOM
+  const span = !fits ? 0 : paint.look === 'full' ? lead + room : Math.max(0, ...kept.flatMap(l => l.parts.map(used)))
+  const rows = kept.flatMap(({ r, i, parts, gap }) => [
+    ...(gap ? [[gapRow(el, paint, `t${i}.g`)]] : []),
+    ...parts.map((part, k) => lineText(el, style, paint, r, `t${i}.${k}`, k, part, span - used(part))),
+  ])
+  return <el.Text key="rows">{rows.flatMap((row, n) => (n ? ['\n', ...row] : row))}</el.Text>
 }
 
 const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, budget: Budget, columns: number | undefined, title?: string): RenderElement => {
@@ -1447,10 +1465,10 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
       <Text color={marks['-']} dimColor={removed === 0}>{`−${removed}`}</Text>
     </Text>
   )
+  const press = style.pressPreview === true ? toggle?.around : undefined
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
-      {head}
-      {diffBody(el, style, shown, path, columns, budget)}
+      {press ? press(<Text key="all">{head}{'\n'}{diffText(el, style, shown, path, columns, budget)}</Text>, { inverse: false }) : [head, ...diffBody(el, style, shown, path, columns, budget)]}
       {hidden > 0 && toggle?.folded !== true ? <Text dimColor>{`… +${hidden} lines`}</Text> : null}
       {toggle?.element ?? null}
     </Box>
@@ -1556,36 +1574,44 @@ const wholeHead = (el: ElementTable, style: Style, file: WholeFile): RenderEleme
   </el.Text>
 )
 
-type RowsOf = { columns: number | undefined; budget: Budget }
+type RowsOf = { press: boolean; columns: number | undefined; budget: Budget }
 
-const wholeRows = (el: ElementTable, style: Style, file: WholeFile, shown: number, { columns, budget }: RowsOf): RenderElement | null => {
+const wholeRows = (el: ElementTable, style: Style, file: WholeFile, shown: number, { press, columns, budget }: RowsOf): RenderElement | null => {
   const lines = file.lines.slice(0, shown)
   if (lines.length === 0) return null
   const diff = lines.map((text, i): DiffLine => ({ mark: file.kind === 'created' ? '+' : '-', num: i + 1, text, hunk: 0 }))
-  return <el.Box key="rows" flexDirection="column">{diffBody(el, style, diff, file.path, columns, budget)}</el.Box>
+  return press ? diffText(el, style, diff, file.path, columns, budget) : <el.Box key="rows" flexDirection="column">{diffBody(el, style, diff, file.path, columns, budget)}</el.Box>
 }
 
 type Toggle = ReturnType<Fold>
 
-const wholeToggle = (fold: Fold, file: WholeFile, id: string, key: string): Toggle => {
+const wholeToggle = (fold: Fold, file: WholeFile, head: RenderElement, id: string, key: string): Toggle => {
   const n = file.lines.length
   if (file.kind === 'created') return n > PREVIEW_LINES ? fold(id, n - PREVIEW_LINES, `fold${key}`) : null
-  return n > 0 ? fold(id, n, `fold${key}`, { label: `show ${lineCount(n)}` }) : null
+  return n > 0 ? fold(id, n, `fold${key}`, { label: `show ${lineCount(n)}`, face: () => head }) : null
+}
+
+const wholeBody = (el: ElementTable, style: Style, file: WholeFile, head: RenderElement, rows: RenderElement | null, toggle: Toggle): (RenderElement | null)[] | RenderElement => {
+  const press = style.pressPreview === true ? toggle?.around : undefined
+  const hover = { inverse: false }
+  if (press && file.kind === 'created') return press(<el.Text key="all">{head}{rows ? ['\n', rows] : null}</el.Text>, hover)
+  return [toggle?.faced ? toggle.element : head, rows && press ? press(rows, hover) : rows]
 }
 
 const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fold, id: string, key: string, budget: Budget, columns: number | undefined): RenderElement => {
   const n = file.lines.length
   const created = file.kind === 'created'
-  const toggle = wholeToggle(fold, file, id, key)
+  const head = wholeHead(el, style, file)
+  const toggle = wholeToggle(fold, file, head, id, key)
   const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : created ? PREVIEW_LINES : 0)
-  const rows = wholeRows(el, style, file, shown, { columns, budget })
+  const press = style.pressPreview === true && toggle?.around !== undefined
+  const rows = wholeRows(el, style, file, shown, { press, columns, budget })
   const rest = n > shown && (toggle ? !toggle.folded : created)
   return (
     <el.Box key={`file${key}`} flexDirection="column">
-      {wholeHead(el, style, file)}
-      {rows}
+      {wholeBody(el, style, file, head, rows, toggle)}
       {rest ? <el.Text key="rest" dimColor>{`… +${n - shown} lines`}</el.Text> : null}
-      {toggle?.element ?? null}
+      {toggle && !toggle.faced ? toggle.element : null}
     </el.Box>
   )
 }
@@ -1962,7 +1988,7 @@ export const describeShell = (command: string, places: Places = { cwd: '', home:
 
 const OUTPUT_LINES = 120
 
-const lines = (value: unknown): string[] => (typeof value === 'string' && value !== '' ? value.replace(/\n$/, '').split('\n') : [])
+const lines = (value: unknown): string[] => (typeof value === 'string' && value !== '' ? value.replace(CONTROL, '').replace(/\n$/, '').split('\n') : [])
 
 export const renderExpandedShell = (el: ElementTable, style: Style, row: ToolRow & { output?: unknown }): RenderElement => {
   const { Box, Text } = el

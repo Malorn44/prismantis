@@ -10,13 +10,21 @@ import { RANDOM_THEMES, pickTheme, resolveStyle } from '../hooks/theme'
 import { ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, setupParts, setupSteps, setupText } from '../hooks/help'
 import type { Theme } from '../hooks/theme'
 import { EDIT_NOTES, PRISM_COLORS, bashEdits, columnWidths, contrast, describeShell, diffLines, diffTint, fullHue, movesTree, onTint, pathLanguage, tint, wordTint, errorReason, formatDuration, groupSummary, isReadOnlyCall, programsOf, refusalReason, rememberCall, shortTarget, shortenPaths, withoutBashEdits } from '../hooks/render'
+import { claudeAt } from './claude-version'
 
 const t = PRESETS['catppuccin-mocha']
-const engine = (on: On) =>
+const BUTTON_PROBE = 'TextButtonProbe'
+const engine = (on: On) => {
+  on('ui.render', { component: 'ToolResult' }, ($, e, next) => {
+    if (e.props.tool !== BUTTON_PROBE) return next(e)
+    const { Button, Text } = $.ui.resolve(e)
+    return <Button plain label={BUTTON_PROBE} onPress={() => undefined}><Text>{BUTTON_PROBE}</Text></Button>
+  })
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
+}
 
 const call = (tool: string, input: unknown, id: string) => ({ tool_use_id: id, tool, input, isRunning: false, isErrored: false, isInterrupted: false })
 
@@ -1244,13 +1252,30 @@ const rowsOf = async (ui: { findAll: (q: { type: string }) => Promise<{ key: str
 }
 const numberedRows = (lines: string[], mark?: '+' | '-') => lines.map((l, i) => `${String(i + 1).padStart(String(lines.length).length)}${mark ? ` ${mark} ` : '  '}${l}`)
 
+test('carriage returns and other control characters never reach a diff row', () => {
+  expect(diffLines({ structuredPatch: [{ oldStart: 1, newStart: 1, lines: ['-a\r', '+b\u001b[31m\r'] }] })?.map(r => r.text)).toEqual(['a', 'b'])
+})
+
+test('a clickable long diff with no known width pads no row, so no tint wraps', async ($, on) => {
+  engine(on)
+  claudeAt(on, '2.1.295')
+  if (!(await takesTextButtons($))) return
+  const lines = [`+${'x'.repeat(300)}`, ...Array.from({ length: 30 }, (_, i) => `+line ${i}`)]
+  const ui = await $.ui.mount(editResult('terminal', 'Edit', { filePath: '/tmp/wide.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines }] }))
+  await drewItself(ui)
+  const rows = (await ui.find({ key: 'fold.rows' }))!.text.split('\n').slice(1)
+  expect(rows.length).toBe(20)
+  expect(rows.filter(r => r !== r.trimEnd())).toEqual([])
+  await ui.unmount()
+})
+
 const editMade = (filePath: string, body: string[]) => ({
   filePath, oldString: '', newString: `${body.join('\n')}\n`, originalFile: '', userModified: false, replaceAll: false,
   structuredPatch: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: body.length, lines: body.map(l => `+${l}`) }],
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`an Edit that makes a new file draws its first lines as added diff lines under a Created header on ${surface}`, async ($, on) => {
+  test(`an Edit that makes a new file draws its first lines as added diff lines under a Created header before Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
     const body = ts(12)
@@ -1260,10 +1285,27 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ type: 'Box', text: /^ 1 \+ export const n1 = 1$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
     expect((await ui.findAll({ type: 'Text', text: /^\+ $/ })).map(m => m.props.color)).toEqual(Array(10).fill(t.diffAdded))
     expect(await ui.find({ type: 'Text', text: /^\+12$/ })).toBeUndefined()
+    expect(await ui.find({ key: 'fold.rows' })).toBeUndefined()
     expect((await ui.find({ key: 'fold' }))?.props).toMatchObject({ variant: 'secondary', label: '+2 more lines' })
     await ui.press({ key: 'fold' })
     expect((await rowsOf(ui)).length).toBe(12)
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`an Edit that makes a new file opens from its "+N more lines" button from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    claudeAt(on, '2.1.295')
+    if (surface === 'terminal' && !(await takesTextButtons($))) return
+    const ui = await $.ui.mount(editResult(surface, 'Edit', editMade('/home/demo/app/made.ts', ts(12))))
+    await drewItself(ui)
+    expect((await ui.find({ key: 'fold' }))?.props).toMatchObject({ variant: 'secondary', label: '+2 more lines' })
+    expect((await ui.find({ key: 'fold.rows' }))?.type).toBe(surface === 'terminal' ? 'Button' : undefined)
+    expect((await ui.find({ key: 'fold.rows' }))?.text.split('\n')[0]).toBe(surface === 'terminal' ? 'Created made.ts (12 lines)' : undefined)
+    await ui.press({ key: surface === 'terminal' ? 'fold.rows' : 'fold' })
+    expect(await rowsOf(ui)).toEqual(numberedRows(ts(12), '+'))
+    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('show less')
     await ui.unmount()
   })
 }
@@ -1297,6 +1339,15 @@ const inDemoApp = (on: On) => {
   on('session.root', () => ({ value: '/home/demo/app' }))
 }
 const numbered = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`)
+const takesTextButtons = async ($: Parameters<TestBody>[0]): Promise<boolean> => {
+  const ui = await $.ui.mount(editResult('terminal', BUTTON_PROBE, {})).catch(() => undefined)
+  if (!ui) return false
+  const drawn = await ui.find({ type: 'Button' })
+  await ui.unmount()
+  if (!drawn) throw new Error('the Button probe drew nothing: call engine(on) before any other ui.render hook')
+  return true
+}
+const drewItself = async (ui: { find: (q: { type: string; text: RegExp }) => Promise<unknown> }) => expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
 
 test('shell edits tell new, removed and renamed files apart from changed ones', () => {
   const kinds = (...files: unknown[]) => bashEdits(shellFiles(...files))?.files.map(f => (f.kind === 'renamed' ? `${f.path} → ${f.to}` : `${f.kind} ${f.path}`))
@@ -1313,14 +1364,19 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`a file a shell command creates shows its first 10 lines as added diff lines under a Created header on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
+    claudeAt(on, '2.1.295')
     const body = numbered(14)
+    if (surface === 'terminal' && !(await takesTextButtons($))) return
     const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(madeFile('notes.py', body))))
+    await drewItself(ui)
     expect(await ui.find({ type: 'Text', text: /^Created notes\.py \(14 lines\)$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^\+14$/ })).toBeUndefined()
     expect(await rowsOf(ui)).toEqual(numberedRows(body.slice(0, 10), '+'))
-    expect((await ui.find({ type: 'Box', text: /^ 1 \+ line 1$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
+    const tinted = surface === 'terminal' ? await ui.find({ type: 'Text', text: /^\+ $/ }) : await ui.find({ type: 'Box', text: /^ 1 \+ line 1$/ })
+    expect(tinted?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
     const fold = await ui.find({ key: 'fold0' })
     expect([fold?.type, fold?.props.variant, fold?.props.label]).toEqual(['Button', 'secondary', '+4 more lines'])
+    expect((await ui.find({ key: 'fold0.rows' }))?.text.split('\n')[0]).toBe(surface === 'terminal' ? 'Created notes.py (14 lines)' : undefined)
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
     await ui.press({ key: 'fold0' })
     expect(await rowsOf(ui)).toEqual(numberedRows(body, '+'))
@@ -1333,12 +1389,104 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`a short new file shows whole, and an empty one says so, on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
+    claudeAt(on, '2.1.295')
     const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(madeFile('one.txt', ['only']), madeFile('empty.txt', []))))
     expect(await ui.find({ type: 'Text', text: /^Created one\.txt \(1 line\)$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^Created empty\.txt \(empty\)$/ })).toBeDefined()
     expect(await rowsOf(ui)).toEqual(['1 + only'])
     expect(await ui.find({ type: 'Button' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`a file a shell command removes is one Deleted line that opens on a click to its removed lines on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    claudeAt(on, '2.1.295')
+    if (!(await takesTextButtons($))) return
+    const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(removedFile('old.txt', ['alpha', 'beta', 'gamma']))))
+    await drewItself(ui)
+    const head = await ui.find({ key: 'fold0' })
+    expect([head?.type, head?.props.plain, head?.text, head?.props.label]).toEqual(['Button', true, 'Deleted old.txt (3 lines)', 'show 3 lines'])
+    expect(await ui.findAll({ type: 'Button' })).toHaveLength(1)
+    expect(await rowsOf(ui)).toEqual([])
+    await ui.press({ key: 'fold0' })
+    expect(await rowsOf(ui)).toEqual(['1 - alpha', '2 - beta', '3 - gamma'])
+    const tinted = surface === 'terminal' ? await ui.find({ type: 'Text', text: /^- $/ }) : await ui.find({ type: 'Box', text: /^1 - alpha$/ })
+    expect(tinted?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffRemoved))
+    expect((await ui.find({ key: 'fold0' }))?.text).toBe('Deleted old.txt (3 lines)')
+    expect(await ui.findAll({ type: 'Button' })).toHaveLength(surface === 'terminal' ? 2 : 1)
+    await ui.press({ key: surface === 'terminal' ? 'fold0.rows' : 'fold0' })
+    expect(await rowsOf(ui)).toEqual([])
+    await ui.unmount()
+  })
+
+  test(`removed lines stay plain in a clickable long diff and in a deleted file's opened lines, as in diff cards, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    claudeAt(on, '2.1.295')
+    const lines = Array.from({ length: 12 }, (_, i) => [`-export const a${i} = ${i}`, `+let b${i} = ${i}`]).flat()
+    const keywords = async (ui: { findAll: (q: { type: string; text: RegExp }) => Promise<unknown[]> }, word: RegExp) => (await ui.findAll({ type: 'Text', text: word })).length
+    if (!(await takesTextButtons($))) return
+    const long = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/long.ts', structuredPatch: [{ oldStart: 1, newStart: 1, lines }] }))
+    await drewItself(long)
+    expect(await keywords(long, /^let$/)).toBeGreaterThan(0)
+    expect(await keywords(long, /^export$/)).toBe(0)
+    await long.unmount()
+    const gone = await $.ui.mount(editResult(surface, 'Bash', shellFiles(removedFile('old.ts', ['export const x = 1', 'let y = 2']))))
+    await drewItself(gone)
+    await gone.press({ key: 'fold0' })
+    expect(await rowsOf(gone)).toEqual(['1 - export const x = 1', '2 - let y = 2'])
+    expect(await keywords(gone, /^(export|let)$/)).toBe(0)
+    await gone.unmount()
+  })
+
+  test(`a long diff keeps the ... row between its hunks, untinted, when it opens on a click anywhere from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+    engine(on)
+    claudeAt(on, '2.1.295')
+    const hunk = (start: number, n: number) => ({ oldStart: start, newStart: start, lines: Array.from({ length: n }, (_, i) => [`-a${start + i}`, `+b${start + i}`]).flat() })
+    if (surface === 'terminal' && !(await takesTextButtons($))) return
+    const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/two.txt', structuredPatch: [hunk(1, 6), hunk(40, 6)] }))
+    await drewItself(ui)
+    const text = surface === 'terminal' ? (await ui.find({ key: 'fold.rows' }))!.text.split('\n').map(l => l.trimEnd()) : (await ui.findAll({})).map(n => n.text)
+    expect(text).toContain('...')
+    if (surface === 'terminal') {
+      expect(text[text.indexOf('...') - 1]).toBe(' 6 + b6')
+      expect(text[text.indexOf('...') + 1]).toBe('40 - a40')
+      expect((await ui.find({ type: 'Text', text: /^\.\.\.$/ }))?.props.backgroundColor).toBeUndefined()
+    }
+    await ui.unmount()
+  })
+
+  test(`an empty line in a long diff pads to the width of its other rows, so its tint does not wrap onto a row of its own, from Claude Code 2.1.295 on ${surface}`, { options: { diffStyle: 'full' } }, async ($, on) => {
+    engine(on)
+    claudeAt(on, '2.1.295')
+    const lines = ['+a', '+', ...Array.from({ length: 30 }, (_, i) => `+line ${i}`)]
+    if (surface === 'terminal' && !(await takesTextButtons($))) return
+    const ui = await $.ui.mount({ ...editResult(surface, 'Edit', { filePath: '/tmp/gap.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines }] }), viewport: { columns: 60, rows: 40 } })
+    await drewItself(ui)
+    if (surface === 'terminal') {
+      const rows = (await ui.find({ key: 'fold.rows' }))!.text.split('\n').slice(1)
+      expect(rows[1]).toMatch(/^ 2 \+ +$/)
+      expect(new Set(rows.map(r => r.length))).toEqual(new Set([rows[0]!.length]))
+    }
+    await ui.unmount()
+  })
+
+  test(`a long diff opens on a click anywhere in it on the terminal, and from its button, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+    engine(on)
+    claudeAt(on, '2.1.295')
+    const body = Array.from({ length: 30 }, (_, i) => [`-old ${i}`, `+new ${i}`]).flat()
+    if (surface === 'terminal' && !(await takesTextButtons($))) return
+    const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/long.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines: body }] }))
+    await drewItself(ui)
+    expect((await ui.find({ key: 'fold' }))?.props).toMatchObject({ variant: 'secondary', label: '+40 more lines' })
+    const rows = await ui.find({ key: 'fold.rows' })
+    expect(rows?.text.split('\n')[0]).toBe(surface === 'terminal' ? '+30 −30' : undefined)
+    if (surface === 'terminal') expect((await ui.find({ type: 'Text', text: /^- $/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.codeFlag))
+    await ui.press({ key: surface === 'terminal' ? 'fold.rows' : 'fold' })
+    expect(await ui.find({ text: /^new 29$/ })).toBeDefined()
+    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('show less')
     await ui.unmount()
   })
 
@@ -1365,9 +1513,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 
-  test(`new and removed files open from a label button on ${surface}`, async ($, on) => {
+  test(`new and removed files keep a label button before Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
+    claudeAt(on, '2.1.294')
     const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(madeFile('notes.txt', numbered(14)), removedFile('old.txt', ['alpha', 'beta']))))
     expect((await ui.find({ key: 'fold0' }))?.props.label).toBe('+4 more lines')
     expect((await ui.find({ key: 'fold0' }))?.children).toEqual([])
@@ -1877,10 +2026,13 @@ test('five opened shell edit cards of dense lines share one node allowance and s
   }
 })
 
-test('new and removed files spend the same node allowance as diff cards and stay under the ceiling', async ($, on) => {
+test('clickable diff rows and new and removed files spend the same node allowance and stay under the ceiling', async ($, on) => {
   engine(on)
+  claudeAt(on, '2.1.295')
+  if (!(await takesTextButtons($))) return
   const body = dense(450).map(l => l.slice(1))
   const results = [
+    ['Edit', { filePath: '/tmp/data.json', structuredPatch: [{ oldStart: 1, newStart: 1, lines: dense(450) }] }, 'fold'],
     ['Bash', shellFiles(madeFile('made.json', body)), 'fold0'],
     ['Bash', shellFiles(removedFile('gone.json', body)), 'fold0'],
   ] as const
@@ -1888,10 +2040,10 @@ test('new and removed files spend the same node allowance as diff cards and stay
     for (const [n, [tool, output, fold]] of results.entries()) {
       const mounted = editResult(surface, tool, output)
       const ui = await $.ui.mount({ ...mounted, props: { ...mounted.props, tool_use_id: `dense-${n}-${surface}` } })
-      expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+      await drewItself(ui)
       await ui.press({ key: fold })
       expect([tool, n, nodeCount(await ui.drawn()) < 10000]).toEqual([tool, n, true])
-      if (n < 1) expect((await tokensOf(ui, /^\{"k0": 0, /)).length).toBeGreaterThan(0)
+      if (n < 2) expect((await tokensOf(ui, /^\{"k0": 0, /)).length).toBeGreaterThan(0)
       expect((await ui.find({ type: 'Text', text: /^\{"k0": 4788, / }))?.children).toHaveLength(1)
       await ui.unmount()
     }
