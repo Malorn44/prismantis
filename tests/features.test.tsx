@@ -1359,6 +1359,91 @@ test('an unknown diffStyle draws the card', { options: { diffStyle: 'fancy' } },
   await ui.unmount()
 })
 
+const twoHunks = [
+  { oldStart: 4, newStart: 4, oldLines: 3, newLines: 3, lines: [' const a = 3', '-const b = 4', '+const b = 5', ' const c = 6'] },
+  { oldStart: 50, newStart: 50, oldLines: 3, newLines: 3, lines: [' const x = 50', '-const y = 51', '+const y = 52', ' const z = 52'] },
+]
+
+for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
+  test(`diffStyle ${diffStyle} parts separate hunks with a dim ... row, in edit and shell edit cards`, { options: { diffStyle } }, async ($, on) => {
+    engine(on)
+    const bash = { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/tmp/far.ts', hunks: twoHunks }], moreFiles: 0 } }
+    for (const surface of ['terminal', 'desktop'] as const) {
+      for (const [tool, output] of [['Edit', { filePath: '/tmp/far.ts', structuredPatch: twoHunks }], ['Bash', bash]] as const) {
+        const ui = await $.ui.mount(editResult(surface, tool, output))
+        const drawn = (await ui.findAll({})).filter(n => /^d\d+$/.test(n.key ?? '') || (n.type === 'Text' && /^ *\.\.\.$/.test(n.text)))
+        expect(drawn.map(n => n.key ?? n.text)).toEqual(['d0', 'd1', 'd2', 'd3', diffStyle === 'bar' ? '  ...' : '...', 'd4', 'd5', 'd6', 'd7'])
+        expect(drawn[4]!.props).toEqual({ dimColor: true })
+        expect(drawn[5]!.text).toMatch(/^(  )?50   const x = 50$/)
+        await ui.unmount()
+      }
+    }
+  })
+}
+
+test('one hunk draws no separator', async ($, on) => {
+  engine(on)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(editResult(surface, 'Edit', patch))
+    expect((await ui.findAll({ type: 'Text', text: /^ *\.\.\.$/ })).length).toBe(0)
+    await ui.unmount()
+  }
+})
+
+const noNewline = { filePath: '/tmp/version.py', structuredPatch: [{ oldStart: 1, newStart: 1, lines: [' NAME = "tank"', '-VERSION = "1.0"', '\\ No newline at end of file', '+VERSION = "1.1"', '\\ No newline at end of file'] }] }
+
+test('a diff keeps the no-newline marker as a row of its own that numbers nothing', () => {
+  expect(diffLines(noNewline)?.map(r => `${r.num}${r.mark}${r.text}`)).toEqual(['1 NAME = "tank"', '2-VERSION = "1.0"', '0\\ No newline at end of file', '2+VERSION = "1.1"', '0\\ No newline at end of file'])
+})
+
+for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
+  test(`diffStyle ${diffStyle} draws the no-newline marker plain and untinted, with no number or mark`, { options: { diffStyle } }, async ($, on) => {
+    engine(on)
+    const tinted = diffStyle === 'card' || diffStyle === 'full'
+    const lead = diffStyle === 'bar' ? '▌ ' : ''
+    const blank = diffStyle === 'bar' ? '  ' : ''
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount(editResult(surface, 'Edit', noNewline))
+      const rows = (await ui.findAll({ type: 'Box' })).filter(b => /^d\d+$/.test(b.key ?? ''))
+      expect(rows.map(r => r.text)).toEqual([`${blank}1   NAME = "tank"`, `${lead}2 - VERSION = "1.0"`, `${blank}     No newline at end of file`, `${lead}2 + VERSION = "1.1"`, `${blank}     No newline at end of file`])
+      expect(rows.map(r => r.props.backgroundColor)).toEqual(tinted ? [undefined, diffTint(t.codeText, t.codeFlag), undefined, diffTint(t.codeText, t.number), undefined] : [undefined, undefined, undefined, undefined, undefined])
+      const note = await ui.find({ type: 'Text', text: /^ No newline at end of file$/ })
+      expect(note?.props.color).toBe(t.codeText)
+      expect(note?.props.dimColor).not.toBe(true)
+      await ui.unmount()
+    }
+  })
+}
+
+test('no-newline markers do not count as lines toward the fold', async ($, on) => {
+  engine(on)
+  const marker = '\\ No newline at end of file'
+  const added = (n: number) => Array.from({ length: n }, (_, i) => `+line ${i + 1}`)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const fits = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/n.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines: [...added(20), marker] }] }))
+    expect(await fits.find({ key: 'fold' })).toBeUndefined()
+    expect(await fits.find({ type: 'Text', text: /^ No newline at end of file$/ })).toBeDefined()
+    await fits.unmount()
+    const long = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/n.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines: [...added(25), marker] }] }))
+    expect((await long.find({ key: 'fold' }))?.props.label).toBe('+5 more lines')
+    expect(await long.find({ type: 'Text', text: /^line 20$/ })).toBeDefined()
+    expect(await long.find({ type: 'Text', text: /^line 21$/ })).toBeUndefined()
+    await long.unmount()
+  }
+})
+
+test('a no-newline marker in a shell edit diff draws harmlessly as its own row', async ($, on) => {
+  engine(on)
+  const hunks = [{ oldStart: 1, newStart: 1, oldLines: 1, newLines: 1, lines: ['-old', '\\ No newline at end of file', '+new', '\\ No newline at end of file'] }]
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(editResult(surface, 'Bash', { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/tmp/x.txt', hunks }], moreFiles: 0 } }))
+    expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /\+1 −1$/ })).toBeDefined()
+    expect((await ui.findAll({ type: 'Text', text: /^ No newline at end of file$/ })).length).toBe(2)
+    await ui.unmount()
+  }
+})
+
 test('a git step that can move the working tree is told apart from other git calls', () => {
   for (const command of ['git checkout main', 'git -C repo switch feature', 'sudo git reset --hard HEAD~1', 'make && git stash pop', 'git -c core.pager=cat pull --rebase', 'FOO=1 git cherry-pick abc123'])
     expect(movesTree(command)).toBe(true)
