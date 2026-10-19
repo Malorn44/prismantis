@@ -476,13 +476,18 @@ const clip = ({ Box }: ElementTable, w: number, drawn: RenderElement, key?: stri
   </Box>
 )
 
-const renderTable = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'table' }>, columns: number, key: string, rtl: boolean, tip?: Tip) => {
-  const { Box, Text } = el
-  const t = style.theme
+const tableLayout = (style: Style, block: Extract<Block, { kind: 'table' }>, columns: number) => {
   const box = style.tableStyle === 'box'
   const gap = box ? 0 : style.tableStyle === 'grid' ? 3 : 2
   const { natural, words } = tableSize(block)
   const widths = box ? columnWidths(natural, columns - 4, 3, words) : columnWidths(natural, columns, gap, words)
+  return { box, gap, natural, widths }
+}
+
+const renderTable = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'table' }>, columns: number, key: string, rtl: boolean, tip?: Tip) => {
+  const { Box, Text } = el
+  const t = style.theme
+  const { box, gap, natural, widths } = tableLayout(style, block, columns)
   const order = natural.map((_, c) => c)
   const mirror = rtl && mirrored(style)
   const flip = rtl && !mirror
@@ -699,6 +704,9 @@ const renderAlert = (el: ElementTable, style: Style, block: Extract<Block, { kin
 
 const TASK_GLYPHS = { checks: ['[ ]', '[✓]'], ticks: ['○', '✓'], box: ['□', '✓'], progress: ['○', '✓'] } as const
 
+const glyphOf = (style: Style, item: Extract<Block, { kind: 'list' }>['items'][number]): string =>
+  item.task !== undefined ? TASK_GLYPHS[style.taskStyle][item.task ? 1 : 0] : /\d/.test(item.marker) ? item.marker : item.depth ? '◦' : '•'
+
 const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind: 'list' }>, columns: number, key: string, copy?: CopyButton, fold?: Fold, tip?: Tip) => {
   const { Box, Text } = el
   const t = style.theme
@@ -718,7 +726,7 @@ const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind
       )}
       {block.items.map((item, i) => {
         const k = `${key}.${i}`
-        const glyph = item.task !== undefined ? TASK_GLYPHS[style.taskStyle][item.task ? 1 : 0] : /\d/.test(item.marker) ? item.marker : item.depth ? '◦' : '•'
+        const glyph = glyphOf(style, item)
         const glyphColor = item.task && tick ? t.accent : t.bullet
         const pad = item.depth * 2 + glyph.length + 1
         const rtl = flowOf(style, item.inline, columns - pad)
@@ -809,6 +817,18 @@ const opensWithCopy = (block: Block): boolean =>
 const holdsOnlyEmptyCode = (block: Block): boolean =>
   block.kind === 'quote' && block.blocks.length === 1 && ((block.blocks[0]!.kind === 'code' && block.blocks[0]!.lines.length === 0) || holdsOnlyEmptyCode(block.blocks[0]!))
 
+const codeHeader = (block: Extract<Block, { kind: 'code' }>): string => `── ${block.lang || 'code'}`
+
+const figureGroups = (blocks: Block[], drawn: Drawn): number[][] => {
+  const isFigure = (b: number) => blocks[b]?.kind === 'table' || drawn.get(b)?.art !== undefined
+  const groups: number[][] = []
+  for (let b = 0; b < blocks.length; b++) {
+    if (b > 0 && isFigure(b) && isFigure(b - 1)) groups.at(-1)!.push(b)
+    else groups.push([b])
+  }
+  return groups
+}
+
 export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], columns: number, drawn: Drawn = new Map(), copy?: CopyButton, fold?: Fold, tip?: Tip): RenderElement[] => {
   const { Box, Text } = el
   const t = style.theme
@@ -862,7 +882,7 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
           <Box key={key} flexDirection="column" alignSelf="flex-start" minWidth={float?.minWidth}>
             {note ? <Text color={t.codeComment}>{note}</Text> : null}
             <Box flexDirection="row" justifyContent="space-between" columnGap={4}>
-              <Text color={t.codeComment}>{`── ${block.lang || 'code'}`}</Text>
+              <Text color={t.codeComment}>{codeHeader(block)}</Text>
               {float ? float.element : button}
             </Box>
             <Box flexDirection="column" paddingLeft={2}>
@@ -923,22 +943,11 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
       </Box>
     )
   })
-  const isFigure = (b: number) => blocks[b]?.kind === 'table' || drawn.get(b)?.art !== undefined
-  const out: RenderElement[] = []
-  for (let b = 0; b < rendered.length; b++) {
-    if (!isFigure(b) || !isFigure(b + 1)) {
-      out.push(copied[b]!)
-      continue
-    }
-    const start = b
-    while (isFigure(b + 1)) b++
-    out.push(
-      <Box key={`row${start}`} flexDirection="row" flexWrap="wrap" columnGap={4} rowGap={1}>
-        {copied.slice(start, b + 1).map((figure, i) => <Box key={`f${start + i}`} flexShrink={0}>{figure}</Box>)}
-      </Box>,
-    )
-  }
-  return out
+  return figureGroups(blocks, drawn).map(group => (group.length === 1 ? copied[group[0]!]! : (
+    <Box key={`row${group[0]}`} flexDirection="row" flexWrap="wrap" columnGap={4} rowGap={1}>
+      {group.map(b => <Box key={`f${b}`} flexShrink={0}>{copied[b]}</Box>)}
+    </Box>
+  )))
 }
 
 export type ToolRow = { tool: string; input: unknown; isRunning: boolean; isErrored: boolean; isInterrupted: boolean }
