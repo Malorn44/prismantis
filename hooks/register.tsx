@@ -11,7 +11,7 @@ import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
 import type { Fold } from './render'
-import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import type { SetupStep } from './help'
 import { HINT, ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, THEME_PREVIEW, findSetup, helpText, languageShowcase, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
@@ -231,6 +231,13 @@ type Probes = { terminal?: Promise<Terminal | null>; htmlCopy?: Promise<Clipboar
 const linkReach = ($: EngineInterface, probes: Probes): Promise<LinkReach> =>
   (probes.links ??= $.session.version().then(v => ({ http: takesHttpLinks(v.base), editor: takesEditorLinks(v.base), marks: takesClickableMarks(v.base) }), () => ({ http: false, editor: false, marks: false })))
 
+const fileCard = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, output: unknown, id: string, style: Style, probes: Probes, drawn: () => Style, columns?: number): Promise<RenderElement | undefined> => {
+  const press = (await linkReach($, probes)).marks
+  if (leftToEngine(output, press)) return undefined
+  await locate($, style)
+  return renderDiffCard(el, drawn(), output, folder($, el, await read($, unfolded), press), id, columns)
+}
+
 const probe = async ($: EngineInterface, style: Style, probes: Probes): Promise<Terminal | null> => {
   probes.terminal ??= applyRtl($, style)
   const terminal = await probes.terminal
@@ -248,10 +255,14 @@ const copyTable = async ($: EngineInterface, backend: ClipboardBackend, html: st
   return result.exitCode === 0 ? null : result.stderr.trim() || command.failure
 }
 
-const folder = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, open?: string[]): Fold => (id, hidden, key) => {
+const folder = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, open?: string[], faces = false): Fold => (id, hidden, key, look) => {
   if (!open) return null
   const folded = !open.includes(id)
-  return { folded, element: <el.Button key={key} variant="secondary" label={folded ? `+${hidden} more lines` : 'show less'} onPress={() => update($, unfolded, ids => (folded ? [...ids, id].slice(-500) : ids.filter(x => x !== id)))} /> }
+  const label = folded ? look?.label ?? `+${hidden} more lines` : 'show less'
+  const toggle = () => update($, unfolded, ids => (folded ? [...ids, id].slice(-500) : ids.filter(x => x !== id)))
+  if (!faces) return { folded, faced: false, element: <el.Button key={key} variant="secondary" label={label} onPress={toggle} /> }
+  const element = look?.face ? <el.Button key={key} plain label={label} onPress={toggle}>{look.face(folded)}</el.Button> : <el.Button key={key} variant="secondary" label={label} onPress={toggle} />
+  return { folded, faced: look?.face !== undefined, element, around: (rows, hover) => <el.Button key={`${key}.rows`} plain label={label} hover={hover} onPress={toggle}>{rows}</el.Button> }
 }
 
 const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, style: Style, blocks: ReturnType<typeof parse>, columns: number, math: Map<number, Typeset> = new Map(), pictures: Map<number, Picture> = new Map(), reply?: string, open?: string[], notes?: { id: string; press: boolean }): RenderElement[] => {
@@ -517,10 +528,7 @@ export const register: Register = (on, options) => {
       return shell && typeof e.props.output !== 'string' ? renderExpandedShell($.ui.resolve(e), fit(e.viewport), e.props) : next(e)
     })
     on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-      if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) {
-        const el = $.ui.resolve(e)
-        return renderDiffCard(el, fit(e.viewport), e.props.output, folder($, el, await read($, unfolded)), e.props.tool_use_id, e.viewport?.columns) ?? next(e)
-      }
+      if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) return (await fileCard($, $.ui.resolve(e), e.props.output, e.props.tool_use_id, style, probes, () => ({ ...fit(e.viewport), pressPreview: e.surface === 'terminal' }), e.viewport?.columns)) ?? next(e)
       const edits = e.props.tool === 'Bash' && !e.props.isErrored ? bashEdits(e.props.output) : undefined
       if (edits) {
         await locate($, style)
@@ -529,7 +537,8 @@ export const register: Register = (on, options) => {
         const above = !hasShellOutput(output) ? null : quiet ? renderShellResult(el, fit(e.viewport), output) : await next({ ...e, props: { ...e.props, output } })
         firstEdit ??= e.props.tool_use_id
         const notes = editNotes(edits, firstEdit === e.props.tool_use_id, shellCommands.get(e.props.tool_use_id))
-        const cards = renderBashEdits(el, fit(e.viewport), edits, folder($, el, await read($, unfolded)), e.props.tool_use_id, above !== null, notes, e.viewport?.columns)
+        const drawn = { ...fit(e.viewport), pressPreview: e.surface === 'terminal' }
+        const cards = renderBashEdits(el, drawn, edits, folder($, el, await read($, unfolded), (await linkReach($, probes)).marks), e.props.tool_use_id, above !== null, notes, e.viewport?.columns)
         return above === null ? cards : <el.Box flexDirection="column">{above}{cards}</el.Box>
       }
       if (!quiet) return next(e)
