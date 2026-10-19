@@ -1089,20 +1089,56 @@ export const diffLines = (output: unknown): DiffLine[] | undefined => {
   const rows: DiffLine[] = []
   for (const hunk of out.structuredPatch as { oldStart?: unknown; newStart?: unknown; lines?: unknown }[]) {
     if (typeof hunk?.oldStart !== 'number' || typeof hunk.newStart !== 'number' || !Array.isArray(hunk.lines)) return undefined
-    let [o, n] = [hunk.oldStart, hunk.newStart]
-    for (const l of hunk.lines) {
-      if (typeof l !== 'string' || l.startsWith('\\')) continue
-      const mark = l[0] === '+' || l[0] === '-' ? l[0] : ' '
-      let num: number
-      if (mark === '-') num = o++
-      else {
-        if (mark === ' ') o++
-        num = n++
-      }
-      rows.push({ mark, num, text: l.slice(1) })
-    }
+    rows.push(...hunkRows(hunk.lines, hunk.oldStart, hunk.newStart))
   }
   return rows
+}
+
+const hunkRows = (lines: unknown[], oldStart: number, newStart: number): DiffLine[] => {
+  const rows: DiffLine[] = []
+  let [o, n] = [oldStart, newStart]
+  for (const l of lines) {
+    if (typeof l !== 'string' || l.startsWith('\\')) continue
+    const mark = l[0] === '+' || l[0] === '-' ? l[0] : ' '
+    let num: number
+    if (mark === '-') num = o++
+    else {
+      if (mark === ' ') o++
+      num = n++
+    }
+    rows.push({ mark, num, text: l.slice(1) })
+  }
+  return rows
+}
+
+type MarkColors = Record<DiffLine['mark'], string | undefined>
+
+type DiffPaint = { look: Style['diffStyle']; gutter: number; marks: MarkColors; tints: MarkColors }
+
+const UNTINTED: MarkColors = { '+': undefined, '-': undefined, ' ': undefined }
+
+const diffPaint = (style: Style, gutter: number): DiffPaint => {
+  const t = style.theme
+  const [added, removed] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
+  const tinted = style.diffStyle === 'card' || style.diffStyle === 'full'
+  return {
+    look: style.diffStyle,
+    gutter,
+    marks: { ...UNTINTED, '+': added, '-': removed },
+    tints: tinted ? { ...UNTINTED, '+': diffTint(t.codeText, added), '-': diffTint(t.codeText, removed) } : UNTINTED,
+  }
+}
+
+const lineRows = ({ Box, Text }: ElementTable, style: Style, paint: DiffPaint, r: DiffLine, i: number): RenderElement[] => {
+  const bg = paint.tints[r.mark]
+  return [
+    <Box key={`d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
+      {paint.look === 'bar' ? <Text color={paint.marks[r.mark]}>{r.mark === ' ' ? '  ' : '▌ '}</Text> : null}
+      <Text dimColor>{`${String(r.num).padStart(paint.gutter)} `}</Text>
+      <Text color={paint.marks[r.mark]} dimColor={r.mark === ' '}>{`${r.mark} `}</Text>
+      <Text color={bg || paint.look === 'bar' ? style.theme.codeText : paint.marks[r.mark]} dimColor={r.mark === ' '}>{r.text === '' ? ' ' : r.text}</Text>
+    </Box>,
+  ]
 }
 
 const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, title?: string): RenderElement => {
@@ -1112,32 +1148,17 @@ const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, i
   const removed = rows.filter(r => r.mark === '-').length
   const toggle = rows.length > DIFF_LINES ? fold?.(id, rows.length - DIFF_LINES, `fold${key}`) : null
   const shown = rows.slice(0, toggle?.folded === false ? DIFF_MAX : DIFF_LINES)
-  const gutter = String(Math.max(0, ...shown.map(r => r.num))).length
-  const [addColor, removeColor] = [t.diffAdded ?? t.number, t.diffRemoved ?? t.codeFlag]
-  const color = (mark: DiffLine['mark']) => (mark === '+' ? addColor : mark === '-' ? removeColor : undefined)
-  const look = style.diffStyle
-  const tinted = look === 'card' || look === 'full'
-  const tints = { '+': tinted ? diffTint(t.codeText, addColor) : undefined, '-': tinted ? diffTint(t.codeText, removeColor) : undefined, ' ': undefined }
-  const frame = look === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
+  const paint = diffPaint(style, String(Math.max(0, ...shown.map(r => r.num))).length)
+  const frame = paint.look === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
       <Text>
         {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
-        <Text color={addColor} dimColor={added === 0}>{`+${added}`}</Text>
+        <Text color={paint.marks['+']} dimColor={added === 0}>{`+${added}`}</Text>
         <Text> </Text>
-        <Text color={removeColor} dimColor={removed === 0}>{`−${removed}`}</Text>
+        <Text color={paint.marks['-']} dimColor={removed === 0}>{`−${removed}`}</Text>
       </Text>
-      {shown.map((r, i) => {
-        const bg = tints[r.mark]
-        return (
-          <Box key={`d${i}`} flexDirection="row" {...(bg ? { backgroundColor: bg } : {})}>
-            {look === 'bar' ? <Text color={color(r.mark)}>{r.mark === ' ' ? '  ' : '▌ '}</Text> : null}
-            <Text dimColor>{`${String(r.num).padStart(gutter)} `}</Text>
-            <Text color={color(r.mark)} dimColor={r.mark === ' '}>{`${r.mark} `}</Text>
-            <Text color={bg || look === 'bar' ? t.codeText : color(r.mark)} dimColor={r.mark === ' '}>{r.text === '' ? ' ' : r.text}</Text>
-          </Box>
-        )
-      })}
+      {shown.flatMap((r, i) => lineRows(el, style, paint, r, i))}
       {rows.length > shown.length && toggle?.folded !== true ? <Text dimColor>{`… +${rows.length - shown.length} lines`}</Text> : null}
       {toggle?.element ?? null}
     </Box>
