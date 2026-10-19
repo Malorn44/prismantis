@@ -1422,7 +1422,7 @@ const lineText = (el: ElementTable, style: Style, paint: DiffPaint, r: DiffLine,
 const diffText = (el: ElementTable, style: Style, shown: DiffLine[], path: string | undefined, columns: number | undefined): RenderElement => {
   const { paint, room, lines } = diffShape(style, shown, path, columns)
   const lead = (paint.look === 'bar' ? 2 : 0) + paint.gutter + 3
-  const used = (part: Piece[]) => lead + width(part.map(p => p.text).join(''))
+  const used = (part: Piece[]) => lead + (part.length ? width(part.map(p => p.text).join('')) : 1)
   const span = paint.look === 'full' && room !== undefined ? lead + room : Math.max(0, ...lines.flatMap(l => l.parts.map(used)))
   const rows = lines.flatMap(({ r, i, parts, gap }) => [
     ...(gap ? [[gapRow(el, paint, `t${i}.g`)]] : []),

@@ -1642,6 +1642,20 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 
+  test(`an empty line in a long diff pads to the width of its other rows, so its tint does not wrap onto a row of its own, from Claude Code 2.1.295 on ${surface}`, { options: { diffStyle: 'full' } }, async ($, on) => {
+    engine(on)
+    claudeAt(on, '2.1.295')
+    const lines = ['+a', '+', ...Array.from({ length: 30 }, (_, i) => `+line ${i}`)]
+    const ui = await $.ui.mount({ ...editResult(surface, 'Edit', { filePath: '/tmp/gap.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines }] }), viewport: { columns: 60, rows: 40 } })
+    if (await refusedTextButtons(ui)) return
+    if (surface === 'terminal') {
+      const rows = (await ui.find({ key: 'fold.rows' }))!.text.split('\n').slice(1)
+      expect(rows[1]).toMatch(/^ 2 \+ +$/)
+      expect(new Set(rows.map(r => r.length))).toEqual(new Set([rows[0]!.length]))
+    }
+    await ui.unmount()
+  })
+
   test(`a long diff opens on a click anywhere in it on the terminal, and from its button, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     claudeAt(on, '2.1.295')
