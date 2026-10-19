@@ -2,6 +2,8 @@
 
 **Furious Five status:** Mantis cleared 3 dumplings in 6m 20s, kick power up 18% to 82 kicks/min. Notes in ~/jade-palace/training.md, scroll at https://github.com/NahumLitvin/prismantis
 
+Type /kick to start; /srv/dojo/moves.md has the moves.
+
 ## Roster
 
 | Mantis | Movie | Superpower | Size |

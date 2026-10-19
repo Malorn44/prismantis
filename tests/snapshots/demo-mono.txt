@@ -34,6 +34,17 @@
     ", scroll at "
   <Text>
     <Link>
+<Text>
+  <Text>
+    "Type "
+  <Text>
+    "/kick"
+  <Text>
+    " to start; "
+  <Text>
+    "/srv/dojo/moves.md"
+  <Text>
+    " has the moves."
 <Box>
   <Text bold>
     <Text>

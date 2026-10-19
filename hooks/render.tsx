@@ -258,8 +258,10 @@ const drawnLink = (n: Extract<Inline, { kind: 'link' }>, reach: Reach): Inline =
   return href === n.href ? n : { ...n, href }
 }
 
+const linksAsPath = (path: string): boolean => !path.startsWith('/') || /^\/[^/]+\/+[^/]/.test(path.replace(/\.+$/, ''))
+
 const drawnPath = (n: Extract<Inline, { kind: 'path' }>, reach: Reach): Inline => {
-  const href = reach.pathLinks ? pathHref(reach, n.text) : undefined
+  const href = reach.pathLinks && linksAsPath(n.text) ? pathHref(reach, n.text) : undefined
   return href === undefined ? n : { ...n, href }
 }
 

@@ -371,6 +371,8 @@ test('the help screen shows every element prismantis draws', async () => {
   expect(links.some(l => l.kind === 'link' && l.href === `file://${l.text}`) && links.some(l => l.kind === 'link' && l.href.startsWith('file:///') && l.href !== `file://${l.text}`)).toBe(true)
   expect(blocks.some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text.startsWith('./')) && b.inline.some(n => n.kind === 'path' && n.text.startsWith('~/')))).toBe(true)
   expect(showcaseText([])).toContain('open on click in a terminal that draws hyperlinks')
+  expect(showcaseText([])).toContain('/tmp/app.ts open on click')
+  expect(showcaseText([])).toContain('slash commands like /config stay text')
   expect(showcaseText([])).toContain('the file each one read or edited opens on click')
   expect(showcaseText([])).toContain('f(*args, **kwargs)')
   expect(showcaseText([])).toContain('Programs and launchers stay plain text')
@@ -746,6 +748,47 @@ test('a home folder with a space is percent-encoded in the file link', async ($,
   await ui.unmount()
 })
 
+const COMMANDS = 'Run /config or /compact first.\n\n- /config opens the settings\n- /compact frees context\n\n| command | does |\n|---|---|\n| /config | settings |\n| /compact | context |'
+
+const pathTexts = async (ui: { findAll: (query: { type: 'Text'; text: RegExp }) => Promise<{ props: { color?: unknown } }[]> }, text: RegExp) =>
+  (await ui.findAll({ type: 'Text', text })).filter(n => n.props.color === PRESETS['catppuccin-mocha'].path).length
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`slash commands like /config in a paragraph, a list and a table stay unlinked path-colored text on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    const ui = await $.ui.mount({ ...mount(COMMANDS), surface })
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    expect([await pathTexts(ui, /^\/config$/), await pathTexts(ui, /^\/compact$/)]).toEqual([3, 3])
+    await ui.unmount()
+  })
+
+  test(`absolute paths with two parts link, and ./ and ~/ paths link as before, on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount('Open /tmp/app.ts, /a/b, ./x or ~/x'), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///tmp/app.ts', 'file:///a/b', 'file:///work/app/x', 'file:///home/me/x'] : [])
+    await ui.unmount()
+  })
+
+  test(`an absolute path links only when a name follows its first slash-separated name, on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount('See /tmp/ and /config. Then /config:3, /a//b, /srv/log., /srv/app.ts:12, // and / alone, /tmp/., C:\\Users\\me\\x.ts and C:/Users/me/x.ts'), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///a/b', 'file:///srv/log', 'file:///srv/app.ts'] : [])
+    expect([await pathTexts(ui, /^\/tmp\/$/), await pathTexts(ui, /^\/config\.$/), await pathTexts(ui, /^\/config$/), await pathTexts(ui, /^\/tmp\/\.$/)]).toEqual([1, 1, 1, 1])
+    await ui.unmount()
+  })
+
+  test(`a tag line stays dim and a closing tag inside a sentence stays unlinked, on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount('<tldr>\n- First point, see /tmp/example.\n</tldr>\n\nClose it with </tldr> when done.'), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///tmp/example'] : [])
+    expect(await pathTexts(ui, /^\/tldr$/)).toBe(1)
+    await ui.unmount()
+  })
+}
+
 for (const [where, surface, base, env] of [
   ['on Claude Code 2.1.288, which refuses file hyperlinks', 'terminal', '2.1.288', {}],
   ['when the Claude Code version is unknown', 'terminal', undefined, {}],
@@ -927,6 +970,19 @@ test('/prismantis setup samples draw their made-up paths without links', async (
   await ui.unmount()
 })
 
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`/prismantis demo links its sample paths and keeps its slash command sample as text on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const text = showcaseText(PRESET_NAMES)
+    const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'CommandOutput', props: { command: 'prismantis', args: 'demo', text, isErrored: false }, viewport: { columns: 120, rows: 40 } })
+    const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
+    expect([hrefs.includes('file:///tmp/app.ts'), hrefs.some(href => href.endsWith('/config'))]).toEqual([surface === 'terminal', false])
+    expect(parse(text, hl).some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text === '/config'))).toBe(true)
+    await ui.unmount()
+  })
+}
+
 const toolCall = (tool: string, input: unknown, id: string) => ({ tool_use_id: id, tool, input, isRunning: false, isErrored: false, isInterrupted: false })
 
 const linkPairs = async (ui: { findAll: (query: { type: 'Link' }) => Promise<{ props: { label?: unknown; href?: unknown } }[]> }) =>
@@ -996,6 +1052,19 @@ test('shell edit cards link their file headers', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /^src\/app\.ts $/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
   await ui.unmount()
 })
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`tool rows and file:// links still link a one-part absolute path on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const row = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/etc' }, 'one-part') })
+    expect(await linkPairs(row)).toEqual(surface === 'terminal' ? [['/etc', 'file:///etc']] : [])
+    await row.unmount()
+    const reply = await $.ui.mount({ ...mount('[/config](file:///config)'), surface })
+    expect((await reply.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///config'] : [])
+    await reply.unmount()
+  })
+}
 
 for (const [where, surface, base, env] of [
   ['on desktop', 'desktop', '2.1.289', {}],
