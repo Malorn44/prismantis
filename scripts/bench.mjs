@@ -3,9 +3,15 @@ import { cpus } from 'node:os'
 import { join } from 'node:path'
 import { ROOT, load } from './load.mjs'
 
-const { parse, mermaidText, boxArt, resolveStyle, el, reply } = await load()
+const { parse, mermaidText, boxArt, resolveStyle, el, reply, renderBlocks, drawDiagrams } = await load()
 const demo = readFileSync(join(ROOT, 'docs/demo.md'), 'utf8')
 const style = resolveStyle({ theme: 'dracula', rtl: 'warp' })
+const hoverStyle = resolveStyle({ theme: 'dracula', rtl: 'warp', copyButtonStyle: 'hover' })
+const button = (_text, key, label = '⧉ copy') => ({ type: 'Button', props: { key, label }, children: [] })
+const hoverReply = (text, columns = 200) => {
+  const blocks = parse(text, { numbers: hoverStyle.highlightNumbers, paths: hoverStyle.highlightPaths })
+  return renderBlocks(el, hoverStyle, blocks, columns, drawDiagrams(el, hoverStyle, blocks, columns), button)
+}
 const columns = 200
 const RUNS = Number(process.env.RUNS ?? 200)
 const BASELINE = join(ROOT, 'docs/bench-baseline.json')
@@ -61,7 +67,10 @@ const nodeRows = [
   ["nodes: 300 paragraphs", Array.from({ length: 300 }, (_, i) => `Paragraph ${i} with **bold**, \`code\`, 99.9% and ~/src/app.ts.`).join("\n\n")],
   ["nodes: 300 Hebrew paragraphs", hebrew(300)],
   ["nodes: demo reply", demo],
-].map(([stage, text]) => ({ stage, nodes: count(reply(text, style)) }))
+].map(([stage, text]) => ({ stage, nodes: count(reply(text, style)) })).concat([
+  ["nodes: demo reply, hover buttons", demo],
+  ["nodes: 300 table rows, hover buttons", bigTable.split("\n").slice(0, 302).join("\n")],
+].map(([stage, text]) => ({ stage, nodes: count(hoverReply(text)) })))
 
 const rows = [
   time('parse, demo (cold)', i => parse(fresh(demo, i), { numbers: true, paths: true })),
@@ -71,6 +80,8 @@ const rows = [
   time('full reply, demo (warm)', () => reply(demo, style)),
   time('full reply, 6x demo (cold)', i => reply(freshCharts(section(6), i), style), Math.max(20, RUNS / 5)),
   time('table, 300 rows', i => reply(fresh(bigTable, i), style)),
+  time('full reply, demo, hover buttons (warm)', () => hoverReply(demo)),
+  time('table, 300 rows, hover buttons', i => hoverReply(fresh(bigTable, i))),
   time('Hebrew, 300 paragraphs (cold)', i => reply(hebrew(300, `-${i}`), style), Math.max(20, RUNS / 5)),
   time('code block, 1500 lines, highlighted', i => reply(fresh(bigCode, i), style), Math.max(20, RUNS / 5)),
   {
@@ -93,13 +104,14 @@ if (args.includes('--update')) {
 }
 if (args.includes('--check')) {
   const baseline = JSON.parse(readFileSync(BASELINE, 'utf8'))
-  const failed = args.includes('--no-time') ? [] : rows.filter(r => baseline[r.stage] !== undefined && r.relative > baseline[r.stage] * TOLERANCE)
+  const timed = !args.includes('--no-time')
+  const failed = timed ? rows.filter(r => baseline[r.stage] !== undefined && r.relative > baseline[r.stage] * TOLERANCE) : []
   const missing = rows.filter(r => baseline[r.stage] === undefined)
   for (const r of failed) console.error(`REGRESSION ${r.stage}: ${r.relative.toFixed(4)} vs baseline ${baseline[r.stage]} (limit x${TOLERANCE})`)
-  for (const r of missing) console.error(`NO BASELINE ${r.stage}`)
+  for (const r of missing) console.error(timed ? `NO BASELINE ${r.stage}` : `no timing baseline yet for ${r.stage}: run bench -- --update on the baseline machine`)
   const grown = nodeRows.filter(r => baseline[r.stage] !== undefined && r.nodes > baseline[r.stage] * 1.1)
   for (const r of grown) console.error(`NODE GROWTH ${r.stage}: ${r.nodes} vs baseline ${baseline[r.stage]} (limit +10%, engine refuses trees over 20000)`)
   for (const r of nodeRows.filter(r => baseline[r.stage] === undefined)) console.error(`NO BASELINE ${r.stage}`)
-  if (failed.length || missing.length || grown.length || nodeRows.some(r => baseline[r.stage] === undefined)) process.exit(1)
+  if (failed.length || (timed && missing.length) || grown.length || nodeRows.some(r => baseline[r.stage] === undefined)) process.exit(1)
   console.log(args.includes('--no-time') ? 'node counts within +10% of baseline (timings reported, not gated)' : `all stages within x${TOLERANCE} time and +10% nodes of baseline`)
 }

@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { parse } from '../hooks/markdown'
 import { PRESETS } from '../hooks/presets'
+import { width } from '../hooks/render'
 import { resolveStyle } from '../hooks/theme'
 
 const TABLE = [
@@ -242,24 +243,154 @@ test('copyButtonStyle hover floats every copy button out of the flow, shown only
   await ui.unmount()
 })
 
-test('copyButtonStyle hover covers only its buttons\' cells, so the rest of the row stays drawn while they show', { options: { copyButtonStyle: 'hover' } }, async $ => {
-  const ui = await $.ui.mount({ ...draw('| Region | p99 |\n|---|---:|\n| eu | 12 |\n\n```bash\nls\n```\n\n> ```bash\n> npm test\n> ```\n>\n> Run that first.'), surface: 'terminal' })
-  const floats = (await ui.findAll({ type: 'Box' })).filter(b => b.props.position === 'absolute' && b.props.display === 'none')
-  expect(floats.map(b => b.text)).toEqual(['⧉ md⧉ art', '⧉ copy', '⧉ copy', '⧉ copy', '⧉ copy reply'])
-  for (const float of floats) {
-    expect(float.props.right).toBe(0)
-    expect(float.props.left).toBeUndefined()
+const SIDES = ['top', 'bottom', 'left', 'right'] as const
+const hoverPlaces = async (ui: { findAll: (query: { type: string }) => Promise<{ props: Record<string, unknown>; text?: string }[]> }) =>
+  (await ui.findAll({ type: 'Box' }))
+    .filter(b => b.props.position === 'absolute' && b.props.display === 'none')
+    .map((b): Record<string, unknown> => ({ text: b.text, ...Object.fromEntries(SIDES.filter(side => b.props[side] !== undefined).map(side => [side, b.props[side]])) }))
+
+for (const surface of ['terminal', 'desktop'] as const) test(`copyButtonStyle hover puts every button on cells its block leaves empty on ${surface}: past a short row or on a code header's free end, or main's corners off the cell grid`, { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw('| Region | p99 |\n|---|---:|\n| eu | 12 |\n\n```bash\nls\n```\n\n> ```bash\n> npm test\n> ```\n>\n> Run that first.'), surface })
+  const boxTable = '│ Region │ p99 │'.length
+  expect(await hoverPlaces(ui)).toEqual(surface === 'terminal' ? [
+    { text: '⧉ md⧉ art', top: 0, left: boxTable },
+    { text: '⧉ copy', top: 0, left: '── bash'.length },
+    { text: '⧉ copy', top: 0, left: '── bash'.length },
+    { text: '⧉ copy', bottom: 0, left: '│ Run that first.'.length },
+    { text: '⧉ copy reply', bottom: 0, right: 0 },
+  ] : [
+    { text: '⧉ md⧉ art', top: 0, right: 0 },
+    { text: '⧉ copy', top: 0, right: 0 },
+    { text: '⧉ copy', top: 0, right: 0 },
+    { text: '⧉ copy', bottom: 0, right: 0 },
+    { text: '⧉ copy reply', bottom: 0, right: 0 },
+  ])
+  for (const float of (await ui.findAll({ type: 'Box' })).filter(b => b.props.position === 'absolute')) {
     expect(float.props.minWidth).toBeUndefined()
     expect(float.props.width).toBeUndefined()
   }
   await ui.unmount()
 })
 
-test('copyButtonStyle hover makes a block at least as wide as its buttons, so buttons anchored right never run off its left edge', { options: { copyButtonStyle: 'hover' } }, async $ => {
-  const ui = await $.ui.mount({ ...draw('| a |\n|---|\n| 1 |\n\n```\nx\n```'), surface: 'terminal' })
-  expect((await ui.find({ key: 'c0' }))?.props.minWidth).toBe('[ ⧉ md ] [ ⧉ art ]'.length)
-  expect((await ui.find({ key: 'b1' }))?.props.minWidth).toBe('[ ⧉ copy ]'.length)
+test('copyButtonStyle hover keeps a code block\'s button at its header\'s right end when the label leaves room, else just past the label', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const line = 'npm --prefix scripts run snapshot -- --update'
+  const ui = await $.ui.mount({ ...draw(`\`\`\`bash\n${line}\n\`\`\`\n\n\`\`\`\nx\n\`\`\``), surface: 'terminal' })
+  expect(2 + line.length - '[ ⧉ copy ]'.length).toBeGreaterThan('── bash'.length)
+  expect((await hoverPlaces(ui)).slice(0, 2)).toEqual([
+    { text: '⧉ copy', top: 0, right: 0 },
+    { text: '⧉ copy', top: 0, left: '── code'.length },
+  ])
   await ui.unmount()
+})
+
+test('copyButtonStyle hover sets the buttons of narrow tables, quotes, lists and alerts just past their first row', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw('| a | b |\n|---|---|\n| 1 | 2 |\n\nText.\n\n> z\n\n- y\n\n> [!NOTE]\n> w'), surface: 'terminal' })
+  expect((await hoverPlaces(ui)).filter(p => p.text !== '⧉ copy reply')).toEqual([
+    { text: '⧉ md⧉ art', top: 0, left: '│ a │ b │'.length },
+    { text: '⧉ copy', top: 0, left: '│ z'.length },
+    { text: '⧉ copy', top: 0, left: '• y'.length },
+    { text: '⧉ copy', top: 0, left: '╭ Note ╮'.length },
+  ])
+  await ui.unmount()
+})
+
+test('copyButtonStyle hover moves a full block\'s buttons to the blank row below it, or above it at the reply\'s end', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw(`${TABLE}\n\nBetween the tables.\n\n${TABLE}`), viewport: { columns: 44, rows: 40 }, surface: 'terminal' })
+  expect((await hoverPlaces(ui)).filter(p => p.text !== '⧉ copy reply')).toEqual([
+    { text: '⧉ md⧉ art', bottom: -1, left: 0, right: 0 },
+    { text: '⧉ md⧉ art', top: -1, left: 0, right: 0 },
+  ])
+  await ui.unmount()
+})
+
+test('copyButtonStyle hover gives a block no buttons when none of its rows or neighbors have room, rather than covering text', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw(TABLE), viewport: { columns: 44, rows: 40 }, surface: 'terminal' })
+  expect(await hoverPlaces(ui)).toEqual([])
+  expect((await ui.find({ key: 'c0' }))?.props.minWidth).toBe('[ ⧉ md ] [ ⧉ art ]'.length)
+  await ui.unmount()
+  const alert = await $.ui.mount({ ...draw('> [!NOTE]\n> ```\n> x\n> ```'), surface: 'terminal' })
+  expect(await hoverPlaces(alert)).toEqual([{ text: '⧉ copy', top: 0, left: 4 + '[ ⧉ copy ]'.length }])
+  await alert.unmount()
+})
+
+type PlacedNode = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+const placedKids = (node: PlacedNode) => (node.children ?? []).filter((child): child is PlacedNode => !!child && typeof child === 'object')
+const placedIn = (node: PlacedNode): Record<string, unknown>[] => [
+  ...(node.props?.position === 'absolute' && node.props.display === 'none' ? [node.props] : []),
+  ...placedKids(node).flatMap(placedIn),
+]
+const elementsOf = (tree: PlacedNode): PlacedNode[] => placedKids(placedKids(tree)[1]!)
+
+test('copyButtonStyle hover never reaches past the reply: no button on the row above its first block or below its last, none on a list item\'s rows', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const samples = [
+    COPY_SAMPLE,
+    `${TABLE}\n\nBetween.\n\n${TABLE}`,
+    '```bash\nnpm --prefix scripts run snapshot -- --update --and --more --flags --here\n```\n\n> ```bash\n> npm test\n> ```\n>\n> Run that first and then keep reading the rest of this long line.',
+    '- item\n  ```bash\n  npm --prefix scripts run snapshot -- --update --and --more --flags\n  ```\n- next',
+  ]
+  let blankRows = 0
+  for (const columns of [44, 80, 120]) for (const text of samples) {
+    const ui = await $.ui.mount({ ...draw(text), viewport: { columns, rows: 40 }, surface: 'terminal' })
+    const elements = elementsOf((await ui.drawn()) as PlacedNode)
+    expect(placedIn(elements[0]!).filter(p => p.top === -1)).toEqual([])
+    expect(placedIn(elements.at(-1)!).filter(p => p.bottom === -1)).toEqual([])
+    if (text.startsWith('- item')) expect(placedIn(elements[0]!).filter(p => p.top === -1 || p.bottom === -1)).toEqual([])
+    blankRows += elements.flatMap(placedIn).filter(p => p.top === -1 || p.bottom === -1).length
+    await ui.unmount()
+  }
+  expect(blankRows).toBeGreaterThan(0)
+})
+
+const hosted = (node: PlacedNode, host?: PlacedNode): { float: Record<string, unknown>; host?: PlacedNode; labels: string[] }[] => [
+  ...(node.props?.position === 'absolute' && node.props.display === 'none' ? [{ float: node.props, host, labels: placedLabels(node) }] : []),
+  ...placedKids(node).flatMap(child => hosted(child, node)),
+]
+const placedLabels = (node: PlacedNode): string[] => (node.type === 'Button' ? [String(node.props?.label)] : placedKids(node).flatMap(placedLabels))
+
+test('copyButtonStyle hover keeps every button within reach of its block: a float past a row sits inside the block\'s box, one in a blank row spans the block\'s width', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const samples = [COPY_SAMPLE, `${TABLE}\n\nBetween.\n\n${TABLE}`, '| a |\n|---|\n| 1 |\n\n```\nx\n```\n\n- y\n\n> z\n\n> [!NOTE]\n> w', 'Intro.\n\n| k | v |\n|---|---|\n| 1 | 2 |\n\n| c | d |\n|---|---|\n| 3 | 4 |', '- item\n  ```\n  x\n  ```\n\n> ```\n> q\n> ```\n>\n> after']
+  const seen = { blankRow: 0, pastRow: 0 }
+  for (const columns of [44, 120]) for (const text of samples) {
+    const ui = await $.ui.mount({ ...draw(text), viewport: { columns, rows: 40 }, surface: 'terminal' })
+    const tree = (await ui.drawn()) as PlacedNode
+    const top = new Set(elementsOf(tree))
+    for (const { float, host, labels } of hosted(tree)) {
+      if (labels.includes('⧉ copy reply')) continue
+      const need = labels.reduce((w, label) => w + (w ? 1 : 0) + width(`[ ${label} ]`), 0)
+      if (float.top === -1 || float.bottom === -1) {
+        seen.blankRow++
+        expect({ left: float.left, spans: float.right !== undefined }).toEqual({ left: 0, spans: true })
+      } else if (typeof float.left === 'number' && float.left > 0) {
+        seen.pastRow++
+        expect({ paddingLeft: float.paddingLeft, inside: !top.has(host!) || Number(host?.props?.minWidth) >= float.left + 1 + need }).toEqual({ paddingLeft: 1, inside: true })
+      }
+    }
+    await ui.unmount()
+  }
+  expect(seen.blankRow > 0 && seen.pastRow > 0).toBe(true)
+})
+
+test('copyButtonStyle hover keeps main\'s corners on desktop, where text is not drawn on a cell grid', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  for (const text of [COPY_SAMPLE, '| a | b |\n|---|---|\n| 1 | 2 |\n\nText.\n\n> z\n\n- y\n\n> [!NOTE]\n> w', `${TABLE}\n\nBetween the tables.\n\n${TABLE}`]) {
+    const ui = await $.ui.mount({ ...draw(text), surface: 'desktop' })
+    const places = await hoverPlaces(ui)
+    expect(places.length).toBeGreaterThan(0)
+    for (const place of places) {
+      expect(place.top === 0 || place.bottom === 0).toBe(true)
+      expect(place.right === 0 || place.left === 0).toBe(true)
+    }
+    await ui.unmount()
+  }
+})
+
+test('copyButtonStyle hover makes a block at least as wide as its buttons, and wide enough to hold buttons set past its row', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw('| a |\n|---|\n| 1 |\n\n```\nx\n```'), surface: 'terminal' })
+  expect((await ui.find({ key: 'c0' }))?.props.minWidth).toBe('│ a │'.length + 1 + '[ ⧉ md ] [ ⧉ art ]'.length)
+  expect((await ui.find({ key: 'b1' }))?.props.minWidth).toBe('── code'.length + 1 + '[ ⧉ copy ]'.length)
+  await ui.unmount()
+  const wide = await $.ui.mount({ ...draw(TABLE), viewport: { columns: 44, rows: 40 }, surface: 'terminal' })
+  expect((await wide.find({ key: 'c0' }))?.props.minWidth).toBe('[ ⧉ md ] [ ⧉ art ]'.length)
+  await wide.unmount()
 })
 
 test('copyButtonStyle hover reserves its buttons\' width beside a narrow block, so a table drawn next to it never covers them', { options: { copyButtonStyle: 'hover' } }, async $ => {

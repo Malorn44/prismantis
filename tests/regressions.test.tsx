@@ -1370,7 +1370,7 @@ test('footnotes follow quotes and fences: a quoted fence marker inside code make
 for (const copyButtonStyle of ['inline', 'hover'] as const) test(`a quote that opens with code puts its own ${copyButtonStyle} copy button on its last row`, { options: { copyButtonStyle } }, async $ => {
   const ui = await $.ui.mount(mount('> ```bash\n> npm test\n> ```\n>\n> Run that first.\n\n> One line.'))
   const boxes = await ui.findAll({ type: 'Box' })
-  const low = boxes.filter(b => (copyButtonStyle === 'hover' ? b.props.display === 'none' && b.props.bottom === 0 && b.props.right === 0 && b.text !== '⧉ copy reply' : b.props.alignSelf === 'flex-end' && b.key !== 'reply'))
+  const low = boxes.filter(b => (copyButtonStyle === 'hover' ? b.props.display === 'none' && b.props.bottom === 0 && b.props.left === width('│ Run that first.') && b.text !== '⧉ copy reply' : b.props.alignSelf === 'flex-end' && b.key !== 'reply'))
   expect(low.map(b => b.text)).toEqual(['⧉ copy'])
   expect(boxes.filter(b => b.props.position === 'absolute' && b.props.top === 0 && b.props.display === 'none').map(b => b.text)).toEqual(copyButtonStyle === 'hover' ? ['⧉ copy', '⧉ copy'] : [])
   await ui.unmount()
@@ -1422,19 +1422,20 @@ test('copyButtonStyle hover keeps Hebrew quotes and alerts on the right, as inli
   }
 })
 
-test('copyButtonStyle hover anchors the buttons of a right-to-left block at its left, where its lines end', { options: { copyButtonStyle: 'hover', rtl: 'warp' } }, async $ => {
+test('copyButtonStyle hover anchors the buttons of a right-to-left block at its left, where its lines end, and a left-to-right one past its lines', { options: { copyButtonStyle: 'hover', rtl: 'warp' } }, async $ => {
   const anchors = async (text: string) => {
     const ui = await $.ui.mount(mount(text))
-    const sides = (await hoverFloats(ui)).map(b => (b.props.left === 0 && b.props.right === undefined ? 'left' : b.props.right === 0 && b.props.left === undefined ? 'right' : 'both'))
+    const places = (await hoverFloats(ui)).map(b => Object.fromEntries(['top', 'bottom', 'left', 'right', 'paddingLeft'].filter(k => b.props[k] !== undefined).map(k => [k, b.props[k]])))
     await ui.unmount()
-    return sides
+    return places
   }
-  expect(await anchors('- שלום עולם\n- עוד פריט')).toEqual(['left'])
-  expect(await anchors('> שלום עולם')).toEqual(['left'])
-  expect(await anchors('> [!NOTE]\n> שלום עולם')).toEqual(['left'])
-  expect(await anchors('| שם | ערך |\n|---|---|\n| אחד | שתיים |')).toEqual(['left'])
-  expect(await anchors('- hello שלום\n- world')).toEqual(['right'])
-  expect(await anchors('- hello\n- world')).toEqual(['right'])
+  const atLeft = [{ top: 0, left: 0 }]
+  expect(await anchors('- שלום עולם\n- עוד פריט')).toEqual(atLeft)
+  expect(await anchors('> שלום עולם')).toEqual(atLeft)
+  expect(await anchors('> [!NOTE]\n> שלום עולם')).toEqual(atLeft)
+  expect(await anchors('| שם | ערך |\n|---|---|\n| אחד | שתיים |')).toEqual(atLeft)
+  expect(await anchors('- hello שלום\n- world')).toEqual([{ top: 0, left: width('• hello שלום'), paddingLeft: 1 }])
+  expect(await anchors('- hello\n- world')).toEqual([{ top: 0, left: width('• hello'), paddingLeft: 1 }])
 })
 
 for (const surface of ['terminal', 'desktop'] as const) test(`display math inside a quote or a list item draws as text on ${surface}`, async $ => {
