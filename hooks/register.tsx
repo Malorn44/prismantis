@@ -242,7 +242,9 @@ const probe = async ($: EngineInterface, style: Style, probes: Probes): Promise<
   probes.terminal ??= applyRtl($, style)
   const terminal = await probes.terminal
   probes.htmlCopy ??= htmlBackend($)
+  const before = style.htmlCopy
   style.htmlCopy = await probes.htmlCopy
+  if (style.htmlCopy !== before) $.ui.invalidate('ui.render')
   return terminal
 }
 
