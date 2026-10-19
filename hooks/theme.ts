@@ -27,6 +27,7 @@ export type Style = {
   inside?: 'quote' | 'alert'
   noteKey?: string
   pressPreview?: boolean
+  openRows?: number
   diffStyle: 'card' | 'full' | 'marks' | 'bar'
   pieStyle: 'round' | 'bars'
   highlightNumbers: boolean

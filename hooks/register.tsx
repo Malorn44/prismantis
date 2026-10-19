@@ -11,7 +11,7 @@ import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
 import type { BashEdits, Fold } from './render'
-import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import { bashEdits, budgeted, drawMath, editNotes, foldsFile, foldsFiles, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, shellBrief, takesClickableMarks, takesEditorLinks, takesHttpLinks, weigh, withoutBashEdits } from './render'
 import type { SetupStep } from './help'
 import { HINT, ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, THEME_PREVIEW, findSetup, helpText, languageShowcase, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
@@ -235,19 +235,30 @@ const fileCard = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']
   const press = (await linkReach($, probes)).marks
   if (leftToEngine(output, press)) return undefined
   await locate($, style)
-  return renderDiffCard(el, drawn(), output, folder($, el, await read($, unfolded), press), id, columns)
+  const open = foldsFile(output) ? await read($, unfolded) : undefined
+  const at = drawn()
+  return budgeted(at, id, [columns, press, weigh(output)].join(' '), open, rows => renderDiffCard(el, { ...at, openRows: rows }, output, folder($, el, open, press), id, columns))
 }
 
 type ShellCards = { style: Style; surface: RenderSurface; quiet: boolean; first: { id?: string }; command?: string; id: string; columns?: number; probes: Probes; engine: (output: unknown) => Promise<RenderElement> }
 
 const shellCards = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, output: unknown, edits: BashEdits, at: ShellCards): Promise<RenderElement> => {
   const rest = withoutBashEdits(output)
-  const above = !hasShellOutput(rest) ? null : at.quiet ? renderShellResult(el, at.style, rest) : await at.engine(rest)
+  const shown = hasShellOutput(rest)
+  const brief = shown && at.quiet ? renderShellResult(el, at.style, rest) : null
+  const notes = editNotes(edits, (at.first.id ?? at.id) === at.id, at.command)
+  const open = foldsFiles(edits) ? await read($, unfolded) : undefined
+  const press = (await linkReach($, at.probes)).marks
+  const fold = folder($, el, open, press)
+  const drawn = { ...at.style, pressPreview: at.surface === 'terminal' }
+  const fits = budgeted(drawn, at.id, [at.columns, press, at.quiet, notes.length, weigh(output)].join(' '), open, rows => {
+    const cards = renderBashEdits(el, { ...drawn, openRows: rows }, edits, fold, at.id, shown, notes, at.columns)
+    return cards && ([brief, cards] as const)
+  })
+  if (!fits) return at.engine(at.quiet ? shellBrief(output) : output)
   at.first.id ??= at.id
-  const notes = editNotes(edits, at.first.id === at.id, at.command)
-  const fold = folder($, el, await read($, unfolded), (await linkReach($, at.probes)).marks)
-  const cards = renderBashEdits(el, { ...at.style, pressPreview: at.surface === 'terminal' }, edits, fold, at.id, above !== null, notes, at.columns)
-  return above === null ? cards : <el.Box flexDirection="column">{above}{cards}</el.Box>
+  const above = shown ? brief ?? (await at.engine(rest)) : null
+  return above === null ? fits[1] : <el.Box flexDirection="column">{above}{fits[1]}</el.Box>
 }
 
 const probe = async ($: EngineInterface, style: Style, probes: Probes): Promise<Terminal | null> => {

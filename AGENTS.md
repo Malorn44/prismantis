@@ -34,7 +34,7 @@ CI gates snapshots and node counts but only prints timings (`bench:check -- --no
 
 CI also fails when a file's cognitive complexity grows: the sum of how far each function goes past 15, as Biome measures it. Split the function instead. When a change lowers it, run `npm --prefix scripts run complexity:update` so the lower number becomes the new limit.
 
-Claude Code refuses any tree over 20000 nodes and silently draws its own text, so a node-count rise lowers that ceiling (about 500 highlighted code lines, 1000 table rows).
+Claude Code refuses any tree over 20000 nodes and silently draws its own text, so a node-count rise lowers that ceiling (about 500 highlighted code lines, 1000 table rows). Diff cards count their own tree and hand a tool result past 19000 nodes or 95000 characters to Claude Code whole (about 950 highlighted or 2700 plain diff lines), so a rise there moves that hand-off rather than causing a refusal.
 
 ## Rules
 

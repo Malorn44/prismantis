@@ -9,7 +9,7 @@ import { PRESET_NAMES, PRESETS } from '../hooks/presets'
 import { RANDOM_THEMES, pickTheme, resolveStyle } from '../hooks/theme'
 import { ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, setupParts, setupSteps, setupText } from '../hooks/help'
 import type { Theme } from '../hooks/theme'
-import { EDIT_NOTES, PRISM_COLORS, bashEdits, columnWidths, contrast, describeShell, diffLines, diffTint, fullHue, highlightFile, movesTree, onTint, pathLanguage, previewBand, tint, wordTint, errorReason, formatDuration, groupSummary, isReadOnlyCall, programsOf, refusalReason, rememberCall, shortTarget, shortenPaths, withoutBashEdits } from '../hooks/render'
+import { EDIT_NOTES, PRISM_COLORS, bashEdits, columnWidths, contrast, describeShell, diffLines, diffTint, fullHue, highlightFile, movesTree, onTint, pathLanguage, previewBand, shellBrief, tint, wordTint,errorReason, formatDuration, groupSummary, isReadOnlyCall, programsOf, refusalReason, rememberCall, shortTarget, shortenPaths, withoutBashEdits } from '../hooks/render'
 import { claudeAt } from './claude-version'
 
 const t = PRESETS['catppuccin-mocha']
@@ -1087,36 +1087,35 @@ for (const toolOutput of ['full', 'quiet'] as const) {
   })
 }
 
-test('a long diff card folds to 20 lines, opens on press up to 400, and folds back', async ($, on) => {
-  engine(on)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const content = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join('\n')
-    const ui = await $.ui.mount(editResult(surface, 'Write', overwrite('/tmp/new.txt', content)))
-    expect(await ui.find({ type: 'Text', text: /^\+25$/ })).toBeDefined()
-    expect((await ui.find({ type: 'Text', text: /^−0$/ }))?.props.dimColor).toBe(true)
-    expect((await ui.find({ type: 'Text', text: /^\+25$/ }))?.props.dimColor).toBe(false)
-    expect(await ui.find({ type: 'Text', text: /^line 20$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^line 21$/ })).toBeUndefined()
-    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('+5 more lines')
-    await ui.press({ key: 'fold' })
-    expect(await ui.find({ type: 'Text', text: /^line 25$/ })).toBeDefined()
-    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('show less')
-    await ui.press({ key: 'fold' })
-    expect(await ui.find({ type: 'Text', text: /^line 21$/ })).toBeUndefined()
-    await ui.unmount()
-  }
-})
+const diffBoxes = async (ui: { findAll: (q: { type: string }) => Promise<{ key?: string }[]> }) => (await ui.findAll({ type: 'Box' })).filter(b => /^d\d+$/.test(b.key ?? '')).length
 
-test('an opened diff card stops at 400 lines and counts the rest', async ($, on) => {
+for (const base of [undefined, '2.1.295'] as const) {
+  test(`a 300-row diff card draws every row, with no fold button, click target or count of hidden lines (${base ?? 'version unknown'})`, async ($, on) => {
+    engine(on)
+    if (base) claudeAt(on, base)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const content = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n')
+      const ui = await $.ui.mount(editResult(surface, 'Write', overwrite('/tmp/new.txt', content)))
+      expect((await ui.find({ type: 'Text', text: /^\+300$/ }))?.props.dimColor).toBe(false)
+      expect((await ui.find({ type: 'Text', text: /^−0$/ }))?.props.dimColor).toBe(true)
+      expect(await diffBoxes(ui)).toBe(300)
+      expect(await ui.find({ type: 'Text', text: /^line 300$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Button' })).toBeUndefined()
+      expect(await ui.find({ text: /^… \+\d+ lines$/ })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+}
+
+test('a 450-line overwrite draws all 450 lines, past the old 400-line cap', async ($, on) => {
   engine(on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const content = Array.from({ length: 450 }, (_, i) => `line ${i + 1}`).join('\n')
     const ui = await $.ui.mount(editResult(surface, 'Write', overwrite('/tmp/big.txt', content)))
-    await ui.press({ key: 'fold' })
-    expect(await ui.find({ type: 'Text', text: /^line 400$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^line 401$/ })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /^… \+50 lines$/ })).toBeDefined()
-    expect((await ui.findAll({})).length).toBeLessThan(2000)
+    expect(await diffBoxes(ui)).toBe(450)
+    expect(await ui.find({ type: 'Text', text: /^line 450$/ })).toBeDefined()
+    expect(await ui.find({ text: /^… \+\d+ lines$/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -1327,17 +1326,18 @@ test('toolOutput quiet keeps a shell edit diff under the first lines of its outp
   await ui.unmount()
 })
 
-test('each shell edit card folds on its own', async ($, on) => {
+test('each shell edit card draws all of its rows', async ($, on) => {
   engine(on)
+  claudeAt(on, '2.1.295')
   const long = Array.from({ length: 25 }, (_, i) => `+line ${i + 1}`)
   const file = (name: string) => ({ filePath: `/tmp/${name}`, hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 25, lines: long }] })
-  const ui = await $.ui.mount(editResult('terminal', 'Bash', { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [file('a.txt'), file('b.txt')], moreFiles: 0 } }))
-  expect((await ui.findAll({ type: 'Text', text: /^line 21$/ })).length).toBe(0)
-  await ui.press({ key: 'fold1' })
-  expect((await ui.findAll({ type: 'Text', text: /^line 21$/ })).length).toBe(1)
-  expect((await ui.find({ key: 'fold0' }))?.props.label).toBe('+5 more lines')
-  expect((await ui.find({ key: 'fold1' }))?.props.label).toBe('show less')
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(editResult(surface, 'Bash', { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [file('a.txt'), file('b.txt')], moreFiles: 0 } }))
+    expect((await ui.findAll({ type: 'Text', text: /^line 25$/ })).length).toBe(2)
+    expect(await diffBoxes(ui)).toBe(50)
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
+    await ui.unmount()
+  }
 })
 
 test('failed shell edits, diffs the card cannot read and tool rows off go to the engine', async ($, on) => {
@@ -1350,6 +1350,200 @@ test('failed shell edits, diffs the card cannot read and tool rows off go to the
     }
   }
 })
+
+const sizeOf = (node: unknown): { nodes: number; text: number } =>
+  typeof node === 'string' ? { nodes: 1, text: node.length }
+  : node === null || typeof node !== 'object' ? { nodes: 0, text: 0 }
+  : ((node as { children?: unknown[] }).children ?? []).map(sizeOf).reduce((a, b) => ({ nodes: a.nodes + b.nodes, text: a.text + b.text }), { nodes: 1, text: 0 })
+
+const lastThat = async (holds: (n: number) => Promise<boolean>, lo: number, hi: number): Promise<number> => {
+  expect([await holds(lo), await holds(hi)]).toEqual([true, false])
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (await holds(mid)) lo = mid
+    else hi = mid
+  }
+  return lo
+}
+
+const handedOff = async (ui: { find: (q: { type: string; text?: RegExp }) => Promise<unknown> }) =>
+  (await ui.find({ type: 'Text', text: /^engine$/ })) !== undefined && (await ui.find({ type: 'Box' })) === undefined
+
+const bigEdit = (surface: 'terminal' | 'desktop', path: string, lines: string[]) => editResult(surface, 'Edit', { filePath: path, structuredPatch: [{ oldStart: 1, newStart: 1, lines }] })
+
+const LONG_DIFFS = [
+  ['plain text', '/tmp/big.txt', (i: number) => `+line ${i}`, 2600, 2800],
+  ['highlighted TypeScript', '/tmp/big.ts', (i: number) => `+export const n${i} = { name: 'n${i}', size: ${i} }`, 900, 1200],
+] as const
+
+for (const [kind, path, line, lo, hi] of LONG_DIFFS) {
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`the longest ${kind} diff prismantis draws stays under Claude Code's 20000 nodes, and one line more goes whole to Claude Code, on ${surface}`, async ($, on) => {
+      engine(on)
+      const edit = (n: number) => bigEdit(surface, path, Array.from({ length: n }, (_, i) => line(i)))
+      const drawsOwn = async (n: number) => {
+        const ui = await $.ui.mount(edit(n))
+        const own = !(await handedOff(ui))
+        await ui.unmount()
+        return own
+      }
+      const edge = await lastThat(drawsOwn, lo, hi)
+      const ui = await $.ui.mount(edit(edge))
+      const size = sizeOf(await ui.drawn())
+      expect(size.nodes).toBeGreaterThan(18500)
+      expect(size.nodes).toBeLessThanOrEqual(19000)
+      expect(size.text).toBeLessThanOrEqual(95000)
+      expect(await diffBoxes(ui)).toBe(edge)
+      await ui.unmount()
+      const over = await $.ui.mount(edit(edge + 1))
+      expect(await handedOff(over)).toBe(true)
+      await over.unmount()
+    })
+  }
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a diff whose text would pass 95000 characters goes whole to Claude Code, and a line past 10000 characters draws in pieces of at most 10000, on ${surface}`, async ($, on) => {
+    engine(on)
+    const prose = (i: number) => `+${i} ${'the tank level reads every sixty seconds and '.repeat(6)}`
+    const edit = (n: number) => bigEdit(surface, '/tmp/notes.txt', Array.from({ length: n }, (_, i) => prose(i)))
+    const drawsOwn = async (n: number) => {
+      const ui = await $.ui.mount(edit(n))
+      const own = !(await handedOff(ui))
+      await ui.unmount()
+      return own
+    }
+    const edge = await lastThat(drawsOwn, 100, 600)
+    const ui = await $.ui.mount(edit(edge))
+    const size = sizeOf(await ui.drawn())
+    expect(size.text).toBeGreaterThan(90000)
+    expect(size.text).toBeLessThanOrEqual(95000)
+    expect(size.nodes).toBeLessThan(5000)
+    expect(await ui.find({ type: 'Text', text: new RegExp(`^${edge - 1} the tank`) })).toBeDefined()
+    await ui.unmount()
+    const over = await $.ui.mount(edit(edge + 1))
+    expect(await handedOff(over)).toBe(true)
+    await over.unmount()
+    const long = 'é'.repeat(4000) + 'x'.repeat(21000)
+    const wide = await $.ui.mount(bigEdit(surface, '/tmp/min.txt', ['-short', `+${long}`]))
+    expect(await handedOff(wide)).toBe(false)
+    const pieces = ((await wide.find({ type: 'Box', key: 'd1' }))?.children ?? []).flatMap(c => (typeof c === 'object' && c !== null && 'children' in c ? (c as { children: unknown[] }).children : [])).filter((c): c is string => typeof c === 'string' && c.length > 2)
+    expect(pieces.join('')).toBe(long)
+    expect(pieces.length).toBe(3)
+    expect(Math.max(...pieces.map(p => p.length))).toBeLessThanOrEqual(10000)
+    await wide.unmount()
+  })
+
+  test(`a shell command's changed files share one budget: five that each draw alone go whole to Claude Code together on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    const file = (k: number, n: number) => ({ filePath: `/home/demo/app/f${k}.ts`, hunks: [{ oldStart: 1, newStart: 1, oldLines: n, newLines: n, lines: Array.from({ length: n }, (_, i) => [`-const v${i} = ${i}`, `+const v${i} = ${i + 1}`]).flat() }] })
+    const files = (n: number) => Array.from({ length: 5 }, (_, k) => file(k, n))
+    const alone = await $.ui.mount(editResult(surface, 'Bash', shellFiles(file(0, 250))))
+    expect(await handedOff(alone)).toBe(false)
+    expect(sizeOf(await alone.drawn()).nodes * 5).toBeGreaterThan(19000)
+    await alone.unmount()
+    const five = await $.ui.mount(editResult(surface, 'Bash', shellFiles(...files(250))))
+    expect(await handedOff(five)).toBe(true)
+    await five.unmount()
+    const small = await $.ui.mount(editResult(surface, 'Bash', shellFiles(...files(60))))
+    expect(await handedOff(small)).toBe(false)
+    expect((await small.findAll({ type: 'Text', text: /^f\d\.ts $/ })).length).toBe(5)
+    expect(await diffBoxes(small)).toBe(5 * 120)
+    await small.unmount()
+  })
+}
+
+for (const toolOutput of ['full', 'quiet'] as const) {
+  test(`a shell result past the budget goes to Claude Code once, its diff whole${toolOutput === 'quiet' ? ' and its output cut to the first lines' : ''} (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
+    const seen: { tool?: unknown; output?: unknown }[] = []
+    on('ui.render', ($, e) => {
+      seen.push({ tool: e.props && 'tool' in e.props ? e.props.tool : undefined, output: e.props && 'output' in e.props ? e.props.output : undefined })
+      const { Text } = $.ui.resolve(e)
+      return <Text>engine</Text>
+    })
+    const file = (k: number) => ({ filePath: `/tmp/f${k}.ts`, hunks: [{ oldStart: 1, newStart: 1, oldLines: 650, newLines: 650, lines: Array.from({ length: 650 }, (_, i) => [`-const v${i} = ${i}`, `+const v${i} = ${i + 1}`]).flat() }] })
+    const output = { stdout: Array.from({ length: 8 }, (_, i) => `patched ${i}`).join('\n'), stderr: 'warning: slow disk', interrupted: false, bashEditDiff: { files: [file(0), file(1)], moreFiles: 0 } }
+    for (const surface of ['terminal', 'desktop'] as const) {
+      seen.length = 0
+      const ui = await $.ui.mount(editResult(surface, 'Bash', output))
+      expect(await handedOff(ui)).toBe(true)
+      expect(seen).toEqual([{ tool: 'Bash', output: toolOutput === 'quiet' ? { ...output, stdout: 'patched 0\npatched 1\npatched 2\n… +6 lines', stderr: '' } : output }])
+      await ui.unmount()
+    }
+  })
+}
+
+test('a shell result cut for Claude Code keeps the first 3 lines of its output and counts the rest, as the quiet output does', () => {
+  expect(shellBrief({ stdout: 'a\nb\nc\nd\ne\n', stderr: '', interrupted: false })).toEqual({ stdout: 'a\nb\nc\n… +2 lines', stderr: '', interrupted: false })
+  expect(shellBrief({ stdout: 'a', stderr: 'w1\nw2\nw3\nw4', interrupted: false })).toEqual({ stdout: 'a', stderr: 'w1\nw2\n… +2 lines', interrupted: false })
+  expect(shellBrief({ stdout: 'a\nb', stderr: '', interrupted: false })).toEqual({ stdout: 'a\nb', stderr: '', interrupted: false })
+})
+
+const withId = <T extends { props: object }>(target: T, id: string): T => ({ ...target, props: { ...target.props, tool_use_id: id } })
+
+test('a diff with no new or deleted file is not drawn again when a preview beside it opens or folds', async ($, on) => {
+  engine(on)
+  claudeAt(on, '2.1.295')
+  let draws = 0
+  on('session.root', () => (draws++, { value: '/tmp' }))
+  const pressCost = async (others: unknown[]) => {
+    const mounted = await Promise.all(others.map((output, i) => $.ui.mount(withId(editResult('desktop', i ? 'Bash' : 'Edit', output), `other${i}`))))
+    const preview = await $.ui.mount(withId(editResult('desktop', 'Write', writeNew('/tmp/new.ts', ts(25))), 'preview'))
+    const before = draws
+    await preview.press({ key: 'fold' })
+    const cost = draws - before
+    for (const ui of [...mounted, preview]) await ui.unmount()
+    return cost
+  }
+  const alone = await pressCost([])
+  expect(alone).toBeGreaterThan(0)
+  expect(await pressCost([patch, shellFiles({ filePath: '/tmp/app.ts', hunks: patch.structuredPatch })])).toBe(alone)
+})
+
+const denseJson = (n: number) => Array.from({ length: n }, (_, i) => `  "r${i}": [${Array.from({ length: 14 }, (_, k) => k + i).join(', ')}],`)
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a new file's preview opened past the budget shows the lines that fit, counts the rest and folds back, never going to Claude Code, on ${surface}`, async ($, on) => {
+    engine(on)
+    claudeAt(on, '2.1.295')
+    const ui = await $.ui.mount(editResult(surface, 'Write', writeNew('/tmp/rows.json', denseJson(450))))
+    if (await refusedTextButtons(ui)) return
+    await ui.press({ key: 'fold' })
+    expect(await handedOff(ui)).toBe(false)
+    const size = sizeOf(await ui.drawn())
+    expect(size.nodes).toBeLessThanOrEqual(19000)
+    expect(size.nodes).toBeGreaterThan(17000)
+    const rest = Number(/^… \+(\d+) lines$/.exec((await ui.find({ text: /^… \+\d+ lines$/ }))?.text ?? '')?.[1])
+    expect(rest).toBeGreaterThan(50)
+    expect(rest).toBeLessThan(440)
+    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('show less')
+    await ui.press({ key: 'fold' })
+    expect(await handedOff(ui)).toBe(false)
+    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('+440 more lines')
+    await ui.unmount()
+  })
+
+  test(`a new file's preview opened in a shell result shows the lines that fit beside the changed files, and folds back, on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    claudeAt(on, '2.1.295')
+    const changed = { filePath: '/home/demo/app/big.ts', hunks: [{ oldStart: 1, newStart: 1, oldLines: 300, newLines: 300, lines: Array.from({ length: 300 }, (_, i) => [`-const v${i} = ${i}`, `+const v${i} = ${i + 1}`]).flat() }] }
+    const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(changed, madeFile('rows.json', denseJson(450)))))
+    if (await refusedTextButtons(ui)) return
+    expect(await handedOff(ui)).toBe(false)
+    await ui.press({ key: 'fold1' })
+    expect(await handedOff(ui)).toBe(false)
+    expect(sizeOf(await ui.drawn()).nodes).toBeLessThanOrEqual(19000)
+    expect(await diffBoxes(ui)).toBeGreaterThanOrEqual(600)
+    const rest = Number(/^… \+(\d+) lines$/.exec((await ui.find({ text: /^… \+\d+ lines$/ }))?.text ?? '')?.[1])
+    expect(rest).toBeGreaterThan(50)
+    expect((await ui.find({ key: 'fold1' }))?.props.label).toBe('show less')
+    await ui.press({ key: 'fold1' })
+    expect((await ui.find({ key: 'fold1' }))?.props.label).toBe('+440 more lines')
+    await ui.unmount()
+  })
+}
 
 const ts = (n: number) => Array.from({ length: n }, (_, i) => `export const n${i + 1} = ${i + 1}`)
 const writeNew = (filePath: string, body: string[]) => ({ type: 'create', filePath, content: body.length ? `${body.join('\n')}\n` : '', structuredPatch: [], originalFile: null })
@@ -1607,7 +1801,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 
-  test(`removed lines stay plain in a clickable long diff and in a deleted file's opened lines, as in diff cards, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+  test(`removed lines stay plain in a long diff and in a deleted file's opened lines, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     inDemoApp(on)
     claudeAt(on, '2.1.295')
@@ -1626,27 +1820,23 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await gone.unmount()
   })
 
-  test(`a long diff keeps the ... row between its hunks, untinted, when it opens on a click anywhere from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+  test(`a long diff keeps the ... row between its hunks, untinted, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     claudeAt(on, '2.1.295')
     const hunk = (start: number, n: number) => ({ oldStart: start, newStart: start, lines: Array.from({ length: n }, (_, i) => [`-a${start + i}`, `+b${start + i}`]).flat() })
     const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/two.txt', structuredPatch: [hunk(1, 6), hunk(40, 6)] }))
-    if (await refusedTextButtons(ui)) return
-    const text = surface === 'terminal' ? (await ui.find({ key: 'fold.rows' }))!.text.split('\n').map(l => l.trimEnd()) : (await ui.findAll({})).map(n => n.text)
-    expect(text).toContain('...')
-    if (surface === 'terminal') {
-      expect(text[text.indexOf('...') - 1]).toBe(' 6 + b6')
-      expect(text[text.indexOf('...') + 1]).toBe('40 - a40')
-      expect((await ui.find({ type: 'Text', text: /^\.\.\.$/ }))?.props.backgroundColor).toBeUndefined()
-    }
+    const text = (await ui.findAll({})).filter(n => /^d\d+$/.test(n.key ?? '') || (n.type === 'Text' && n.text === '...')).map(n => n.text)
+    expect(text.length).toBe(25)
+    expect(text[text.indexOf('...') - 1]).toBe(' 6 + b6')
+    expect(text[text.indexOf('...') + 1]).toBe('40 - a40')
+    expect((await ui.find({ type: 'Text', text: /^\.\.\.$/ }))?.props.backgroundColor).toBeUndefined()
     await ui.unmount()
   })
 
-  test(`an empty line in a long diff pads to the width of its other rows, so its tint does not wrap onto a row of its own, from Claude Code 2.1.295 on ${surface}`, { options: { diffStyle: 'full' } }, async ($, on) => {
+  test(`an empty line in a clickable new file's diff lines pads to the width of its other rows, so its tint does not wrap onto a row of its own, from Claude Code 2.1.295 on ${surface}`, { options: { diffStyle: 'full' } }, async ($, on) => {
     engine(on)
     claudeAt(on, '2.1.295')
-    const lines = ['+a', '+', ...Array.from({ length: 30 }, (_, i) => `+line ${i}`)]
-    const ui = await $.ui.mount({ ...editResult(surface, 'Edit', { filePath: '/tmp/gap.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines }] }), viewport: { columns: 60, rows: 40 } })
+    const ui = await $.ui.mount({ ...editResult(surface, 'Edit', editMade('/tmp/gap.txt', ['a', '', ...Array.from({ length: 30 }, (_, i) => `line ${i}`)])), viewport: { columns: 60, rows: 40 } })
     if (await refusedTextButtons(ui)) return
     if (surface === 'terminal') {
       const rows = (await ui.find({ key: 'fold.rows' }))!.text.split('\n').slice(1)
@@ -1656,19 +1846,16 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 
-  test(`a long diff opens on a click anywhere in it on the terminal, and from its button, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
+  test(`a long diff draws whole, tinted, with no button or click target, from Claude Code 2.1.295 on ${surface}`, async ($, on) => {
     engine(on)
     claudeAt(on, '2.1.295')
     const body = Array.from({ length: 30 }, (_, i) => [`-old ${i}`, `+new ${i}`]).flat()
     const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/long.txt', structuredPatch: [{ oldStart: 1, newStart: 1, lines: body }] }))
-    if (await refusedTextButtons(ui)) return
-    expect((await ui.find({ key: 'fold' }))?.props).toMatchObject({ variant: 'secondary', label: '+40 more lines' })
-    const rows = await ui.find({ key: 'fold.rows' })
-    expect(rows?.text.split('\n')[0]).toBe(surface === 'terminal' ? '+30 −30' : undefined)
-    if (surface === 'terminal') expect((await ui.find({ type: 'Text', text: /^- $/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.codeFlag))
-    await ui.press({ key: surface === 'terminal' ? 'fold.rows' : 'fold' })
-    expect(await ui.find({ text: /^new 29$/ })).toBeDefined()
-    expect((await ui.find({ key: 'fold' }))?.props.label).toBe('show less')
+    expect(await ui.find({ type: 'Text', text: /^\+30 −30$/ })).toBeDefined()
+    expect(await diffBoxes(ui)).toBe(60)
+    expect(await ui.find({ type: 'Text', text: /^new 29$/ })).toBeDefined()
+    expect((await ui.find({ type: 'Box', text: /^ 1 - old 0$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.codeFlag))
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
     await ui.unmount()
   })
 
@@ -2091,15 +2278,15 @@ test('highlightFile hands a surface that draws code natively the engine\'s Code 
   }
 })
 
-test('an opened 450-line TypeScript file highlights 400 lines and stays well under the node ceiling', async ($, on) => {
+test('a 450-line TypeScript overwrite highlights every line and stays under the node ceiling', async ($, on) => {
   engine(on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const content = Array.from({ length: 450 }, (_, i) => `export const n${i} = { name: 'n${i}', size: ${i} } // item ${i}`).join('\n')
     const ui = await $.ui.mount(editResult(surface, 'Write', overwrite('/tmp/big.ts', content)))
-    await ui.press({ key: 'fold' })
-    expect((await tokensOf(ui, /^export const n399 = /))[0]).toEqual(['export', onTint(t.codeFlag, addTint), false])
-    expect(await ui.find({ type: 'Text', text: /^… \+50 lines$/ })).toBeDefined()
-    expect((await ui.findAll({})).length).toBeLessThan(4000)
+    expect((await tokensOf(ui, /^export const n449 = /))[0]).toEqual(['export', onTint(t.codeFlag, addTint), false])
+    expect(await ui.find({ text: /^… \+\d+ lines$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    expect((await ui.findAll({})).length).toBeLessThan(10000)
     await ui.unmount()
   }
 })

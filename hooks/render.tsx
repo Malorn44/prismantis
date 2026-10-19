@@ -1038,8 +1038,113 @@ export const renderShellResult = (el: ElementTable, style: Style, output: unknow
   )
 }
 
-const DIFF_LINES = 20
+export const shellBrief = (output: unknown): unknown => {
+  if (output === null || typeof output !== 'object') return output
+  const out = output as Record<string, unknown>
+  const [stdout, stderr] = [lines(out.stdout), lines(out.stderr)]
+  const kept = [stdout.slice(0, RESULT_LINES), stderr.slice(0, Math.max(0, RESULT_LINES - stdout.length))] as const
+  const hidden = stdout.length + stderr.length - kept[0].length - kept[1].length
+  const note = hidden > 0 ? [`… +${hidden} lines`] : []
+  const [shownOut, shownErr] = kept[1].length ? [kept[0], [...kept[1], ...note]] : [[...kept[0], ...note], kept[1]]
+  return { ...out, stdout: shownOut.join('\n'), stderr: shownErr.join('\n') }
+}
+
 const DIFF_MAX = 400
+
+const TREE_NODES = 19000
+const TREE_TEXT = 95000
+const TEXT_CHILD = 10000
+const ROW_NODES = 7
+
+const isElement = (node: unknown): node is { children?: unknown } => node !== null && typeof node === 'object' && !Array.isArray(node)
+
+const costOf = (node: unknown): [number, number] => {
+  if (typeof node === 'string') return [1, node.length > TEXT_CHILD ? Infinity : node.length]
+  return isElement(node) ? [1, 0] : [0, 0]
+}
+
+const kidsOf = (node: unknown): unknown[] => {
+  const kids = isElement(node) ? node.children : node
+  return Array.isArray(kids) ? kids : []
+}
+
+export const fitsTree = (tree: unknown): boolean => {
+  const stack = [tree]
+  let [nodes, text] = [0, 0]
+  while (stack.length) {
+    const node = stack.pop()
+    const [n, t] = costOf(node)
+    nodes += n
+    text += t
+    if (nodes > TREE_NODES || text > TREE_TEXT) return false
+    for (const child of kidsOf(node)) stack.push(child)
+  }
+  return true
+}
+
+const mayFit = (diffs: DiffLine[][]): boolean => {
+  let [rows, text] = [0, 0]
+  for (const diff of diffs) for (const r of diff) [rows, text] = [rows + 1, text + r.text.length]
+  return rows * ROW_NODES <= TREE_NODES && text <= TREE_TEXT
+}
+
+type Fitted<T> = { open: number; tree: T }
+
+const fitting = <T,>(build: (open: number) => T | undefined, opened: boolean): Fitted<T> | undefined => {
+  const full = build(DIFF_MAX)
+  if (full === undefined || fitsTree(full)) return full === undefined ? undefined : { open: DIFF_MAX, tree: full }
+  const least = opened ? build(0) : undefined
+  if (least === undefined || !fitsTree(least)) return undefined
+  let [lo, hi, best] = [1, DIFF_MAX - 1, { open: 0, tree: least }]
+  while (lo <= hi) {
+    const open = (lo + hi) >> 1
+    const tree = build(open)
+    if (tree !== undefined && fitsTree(tree)) [best, lo] = [{ open, tree }, open + 1]
+    else hi = open - 1
+  }
+  return best
+}
+
+const fitted = new WeakMap<Theme, Map<string, number | null>>()
+
+export const weigh = (value: unknown, depth = 0): number => {
+  if (typeof value === 'string') return value.length + 1
+  if (value === null || typeof value !== 'object' || depth > 8) return 0
+  return Object.values(value).reduce<number>((n, v) => n + weigh(v, depth + 1), 1)
+}
+
+export const budgeted = <T,>(style: Style, id: string, sig: string, open: string[] | undefined, build: (open: number) => T | undefined): T | undefined => {
+  const mine = (open ?? []).filter(x => x === id || x.startsWith(`${id}:`))
+  const key = [id, sig, style.pressPreview === true, style.diffStyle, ...mine].join('\0')
+  const cache = fitted.get(style.theme) ?? new Map<string, number | null>()
+  fitted.set(style.theme, cache)
+  const known = cache.get(key)
+  if (known !== undefined) return known === null ? undefined : build(known)
+  const found = fitting(build, mine.length > 0)
+  remember(cache, key, () => found?.open ?? null, 500)
+  return found?.tree
+}
+
+export const foldsFile = (output: unknown): boolean => {
+  const out = (output ?? {}) as { type?: unknown; oldString?: unknown; originalFile?: unknown }
+  return out.type === 'create' || (out.oldString === '' && (out.originalFile === null || out.originalFile === ''))
+}
+
+export const foldsFiles = (edits: BashEdits): boolean => edits.files.some(file => file.kind === 'created' || file.kind === 'deleted')
+
+const chunked = <T extends { text: string }>(piece: T): T[] => {
+  if (piece.text.length <= TEXT_CHILD) return [piece]
+  const parts: T[] = []
+  let text = ''
+  for (const g of graphemes(piece.text)) {
+    if (text.length + g.length > TEXT_CHILD) {
+      parts.push({ ...piece, text })
+      text = ''
+    }
+    text += g
+  }
+  return [...parts, { ...piece, text }]
+}
 
 type DiffLine = { mark: '+' | '-' | ' ' | '\\'; num: number; text: string; hunk: number }
 
@@ -1319,7 +1424,7 @@ const visualRows = (pieces: Piece[], room: number | undefined): Piece[][] => {
 
 const drawCode = ({ Text }: ElementTable, style: Style, pieces: Piece[], bg: string | undefined, word: string | undefined, key: string): RenderNode[] | string => {
   if (!pieces.length) return ' '
-  return pieces.map((p, j) => {
+  return pieces.flatMap(chunked).map((p, j) => {
     const lit = p.word && word !== undefined
     if (!lit && !p.color && !p.italic) return p.text
     const on = lit ? word : bg
@@ -1431,29 +1536,22 @@ const diffText = (el: ElementTable, style: Style, shown: DiffLine[], path: strin
   return <el.Text key="rows">{rows.flatMap((row, n) => (n ? ['\n', ...row] : row))}</el.Text>
 }
 
-const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], fold: Fold, id: string, key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
+const diffBox = (el: ElementTable, style: Style, rows: DiffLine[], key: string, path: string | undefined, columns: number | undefined, title?: string): RenderElement => {
   const { Box, Text } = el
   const t = style.theme
   const added = rows.filter(r => r.mark === '+').length
   const removed = rows.filter(r => r.mark === '-').length
-  const toggle = rows.length > DIFF_LINES ? fold?.(id, rows.length - DIFF_LINES, `fold${key}`) : null
-  const shown = rows.slice(0, toggle?.folded === false ? DIFF_MAX : DIFF_LINES)
   const marks = diffPaint(style, 0).marks
   const frame = style.diffStyle === 'card' ? { borderStyle: 'round', borderColor: t.rule, paddingX: 1 } : {}
-  const head = (
-    <Text key="head">
-      {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
-      <Text color={marks['+']} dimColor={added === 0}>{`+${added}`}</Text>
-      <Text> </Text>
-      <Text color={marks['-']} dimColor={removed === 0}>{`−${removed}`}</Text>
-    </Text>
-  )
-  const press = style.pressPreview === true ? toggle?.around : undefined
   return (
     <Box key={`card${key}`} flexDirection="column" flexShrink={1} {...frame}>
-      {press ? press(<Text key="all">{head}{'\n'}{diffText(el, style, shown, path, columns)}</Text>, { inverse: false }) : [head, ...diffBody(el, style, shown, path, columns)]}
-      {rows.length > shown.length && toggle?.folded !== true ? <Text dimColor>{`… +${rows.length - shown.length} lines`}</Text> : null}
-      {toggle?.element ?? null}
+      <Text key="head">
+        {title === undefined ? null : <Text color={t.path}>{`${title} `}</Text>}
+        <Text color={marks['+']} dimColor={added === 0}>{`+${added}`}</Text>
+        <Text> </Text>
+        <Text color={marks['-']} dimColor={removed === 0}>{`−${removed}`}</Text>
+      </Text>
+      {diffBody(el, style, rows, path, columns)}
     </Box>
   )
 }
@@ -1482,8 +1580,9 @@ export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, 
   const rows = diffLines(output)
   if (rows === undefined) return undefined
   const made = editedIntoBeing(output, rows)
+  if (!made && !mayFit([rows])) return undefined
   const path = (output as { filePath?: unknown }).filePath
-  return diffRow(el, style, [made ? wholeFileCard(el, style, made, fold, id, '', columns) : diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined, columns)], false)
+  return diffRow(el, style, [made ? wholeFileCard(el, style, made, fold, id, '', columns) : diffBox(el, style, rows, '', typeof path === 'string' ? path : undefined, columns)], false)
 }
 
 type WholeFile = { kind: 'created' | 'deleted'; path: string; lines: string[] }
@@ -1588,7 +1687,7 @@ const previewText = (el: ElementTable, style: Style, path: string, shown: string
     ...(i ? ['\n'] : []),
     <Text key={`${key}.g${i}`} dimColor {...muted(style, band)}>{`${String(i + 1).padStart(gutter)}  `}</Text>,
     <Text key={`${key}.c${i}`} color={ink} {...lift(ink)}>
-      {segs.length ? segs.map((s, j) => (s.color || s.italic ? <Text key={`${key}.c${i}.${j}`} color={s.color} italic={s.italic} {...lift(s.color)}>{s.text}</Text> : s.text)) : ' '}
+      {segs.length ? segs.flatMap(chunked).map((s, j) => (s.color || s.italic ? <Text key={`${key}.c${i}.${j}`} color={s.color} italic={s.italic} {...lift(s.color)}>{s.text}</Text> : s.text)) : ' '}
     </Text>,
   ])
 }
@@ -1633,7 +1732,8 @@ const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fo
   const created = file.kind === 'created'
   const head = wholeHead(el, style, file)
   const toggle = wholeToggle(fold, file, head, id, key)
-  const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : created ? PREVIEW_LINES : 0)
+  const closed = created ? PREVIEW_LINES : 0
+  const shown = Math.min(n, toggle?.folded === false ? Math.max(closed, style.openRows ?? DIFF_MAX) : closed)
   const press = style.pressPreview === true && toggle?.around !== undefined
   const band = press && !marked ? previewBand(style.theme) : undefined
   const rows = wholeRows(el, style, file, shown, marked, press, band, columns)
@@ -1656,9 +1756,10 @@ const renamedLine = (el: ElementTable, style: Style, from: string, to: string, k
   </el.Text>
 )
 
-export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = [], columns?: number): RenderElement => {
+export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = [], columns?: number): RenderElement | undefined => {
+  if (!mayFit(edits.files.flatMap(file => (file.kind === 'modified' ? [file.rows] : [])))) return undefined
   const cards = edits.files.map((file, i) =>
-    file.kind === 'modified' ? diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), file.path, columns, shortPath(style, file.path))
+    file.kind === 'modified' ? diffBox(el, style, file.rows, String(i), file.path, columns, shortPath(style, file.path))
     : file.kind === 'renamed' ? renamedLine(el, style, file.path, file.to, String(i))
     : wholeFileCard(el, style, file, fold, `${id}:${i}`, String(i), columns))
   const more = edits.more ? [<el.Text key="more" dimColor>{`… +${edits.more} more ${edits.more === 1 ? 'file' : 'files'}`}</el.Text>] : []
