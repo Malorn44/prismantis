@@ -9,7 +9,7 @@ import { PRESET_NAMES, PRESETS } from '../hooks/presets'
 import { RANDOM_THEMES, pickTheme, resolveStyle } from '../hooks/theme'
 import { ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, setupParts, setupSteps, setupText } from '../hooks/help'
 import type { Theme } from '../hooks/theme'
-import { EDIT_NOTES, PRISM_COLORS, bashEdits, columnWidths, contrast, describeShell, diffLines, diffTint, fullHue, movesTree, onTint, pathLanguage, tint, errorReason, formatDuration, groupSummary, isReadOnlyCall, programsOf, refusalReason, rememberCall, shortTarget, shortenPaths, withoutBashEdits } from '../hooks/render'
+import { EDIT_NOTES, PRISM_COLORS, bashEdits, columnWidths, contrast, describeShell, diffLines, diffTint, fullHue, movesTree, onTint, pathLanguage, tint, wordTint, errorReason, formatDuration, groupSummary, isReadOnlyCall, programsOf, refusalReason, rememberCall, shortTarget, shortenPaths, withoutBashEdits } from '../hooks/render'
 
 const t = PRESETS['catppuccin-mocha']
 const engine = (on: On) =>
@@ -1432,7 +1432,7 @@ test('no-newline markers do not count as lines toward the fold', async ($, on) =
   }
 })
 
-const addTint = diffTint(t.codeText, t.number)!
+const [addTint, removeTint] = [diffTint(t.codeText, t.number)!, diffTint(t.codeText, t.codeFlag)!]
 type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
 const tokensOf = async (ui: { find: (q: object) => Promise<Drawn | undefined> }, line: RegExp) =>
   ((await ui.find({ type: 'Text', text: line }))?.children ?? [])
@@ -1462,7 +1462,8 @@ test('an edit to a .ts file highlights its added and context lines, and draws re
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount(editResult(surface, 'Edit', patch))
     expect(await tokensOf(ui, /^const a = 1$/)).toEqual([['const', t.codeFlag, false], ['1', t.number, false]])
-    expect((await ui.find({ type: 'Text', text: /^const b = 2$/ }))?.children).toEqual(['const b = 2'])
+    expect((await ui.find({ type: 'Text', text: /^const b = 2$/ }))?.children?.[0]).toBe('const b = ')
+    expect(await tokensOf(ui, /^const b = 2$/)).toEqual([['2', onTint(t.codeText, wordTint(t.codeText, t.codeFlag)!), false]])
     expect(await tokensOf(ui, /^const c = 4$/)).toEqual([['const', onTint(t.codeFlag, addTint), false], ['4', onTint(t.number, addTint), false]])
     expect((await ui.find({ type: 'Text', text: /^const c = 4$/ }))?.children?.[1]).toBe(' c = ')
     expect((await ui.find({ type: 'Text', text: /^const a = 1$/ }))?.props).toEqual({ color: t.codeText })
@@ -1534,16 +1535,17 @@ for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
   })
 }
 
-test('every code color reads at 4.5:1 or better on every diff line tint in every preset', () => {
+test('every code color reads at 4.5:1 or better on every diff line tint and word tint in every preset', () => {
   const slots = [...new Set(['codeText', ...Object.values(PRISM_COLORS)] as const)]
   const failures: string[] = []
   for (const [name, theme] of Object.entries(PRESETS) as [string, Theme][]) {
     if (!theme.codeText) continue
     for (const line of [theme.diffAdded, theme.diffRemoved]) {
-      const bg = diffTint(theme.codeText, line)!
-      for (const slot of slots) {
-        const color = onTint(theme[slot], bg)
-        if (color && contrast(color, bg) < 4.5) failures.push(`${name}.${slot} on ${bg}`)
+      for (const bg of [diffTint(theme.codeText, line)!, wordTint(theme.codeText, line)!]) {
+        for (const slot of slots) {
+          const color = onTint(theme[slot], bg)
+          if (color && contrast(color, bg) < 4.5) failures.push(`${name}.${slot} on ${bg}`)
+        }
       }
     }
   }
@@ -1551,6 +1553,79 @@ test('every code color reads at 4.5:1 or better on every diff line tint in every
   expect(onTint(t.codeText, addTint)).toBe(t.codeText)
   expect(onTint('red', addTint)).toBe('red')
   expect(onTint(undefined, addTint)).toBeUndefined()
+})
+
+test('word tints deepen their line tint toward the line color, apart from it and from each other in every preset', () => {
+  expect(wordTint(t.codeText, t.number)).toBe(tint(addTint, t.number, 0.3))
+  expect(wordTint(undefined, t.number)).toBeUndefined()
+  expect(wordTint(t.codeText, 'green')).toBeUndefined()
+  const failures: string[] = []
+  for (const [name, theme] of Object.entries(PRESETS) as [string, Theme][]) {
+    if (!theme.codeText) continue
+    const [add, remove] = [wordTint(theme.codeText, theme.diffAdded)!, wordTint(theme.codeText, theme.diffRemoved)!]
+    if (deltaE(add, remove) < 13) failures.push(`${name} add and remove words ΔE ${deltaE(add, remove).toFixed(1)}`)
+    for (const line of [theme.diffAdded, theme.diffRemoved]) {
+      const [row, word] = [diffTint(theme.codeText, line)!, wordTint(theme.codeText, line)!]
+      if (deltaE(row, word) < 6 || contrast(row, word) < 1.3) failures.push(`${name} ${line} line to word ΔE ${deltaE(row, word).toFixed(1)}, ${contrast(row, word).toFixed(2)}:1`)
+    }
+  }
+  expect(failures).toEqual([])
+})
+
+const greetEdit = { filePath: '/tmp/greet.ts', structuredPatch: [{ oldStart: 6, newStart: 6, lines: [' const trimmed = name.trim()', "-return 'hello ' + trimmed", "+return 'hey ' + trimmed"] }] }
+const litOf = async (ui: { findAll: (q: object) => Promise<{ text: string; props: Record<string, unknown> }[]> }) =>
+  (await ui.findAll({ type: 'Text' })).filter(n => n.props.backgroundColor !== undefined).map(n => [n.text, n.props.backgroundColor, n.props.color])
+
+for (const diffStyle of ['card', 'full', 'marks', 'bar'] as const) {
+  test(`diffStyle ${diffStyle} marks exactly the changed word of a changed line, over its highlighting`, { options: { diffStyle } }, async ($, on) => {
+    engine(on)
+    const tinted = diffStyle === 'card' || diffStyle === 'full'
+    const [addWord, removeWord] = tinted ? [wordTint(t.codeText, t.number)!, wordTint(t.codeText, t.codeFlag)!] : [addTint, removeTint]
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount(editResult(surface, 'Edit', greetEdit))
+      expect(await litOf(ui)).toEqual([['hello', removeWord, onTint(t.codeText, removeWord)], ['hey', addWord, onTint(t.codeString, addWord)]])
+      expect((await ui.find({ type: 'Text', text: /^return 'hello ' \+ trimmed$/ }))?.children?.[0]).toBe("return '")
+      expect((await tokensOf(ui, /^return 'hey ' \+ trimmed$/))[0]).toEqual(['return', tinted ? onTint(t.codeFlag, addTint) : t.codeFlag, false])
+      expect((await ui.find({ type: 'Box', text: /^(▌ )?7 \+ return 'hey ' \+ trimmed$/ }))?.props.backgroundColor).toBe(tinted ? addTint : undefined)
+      await ui.unmount()
+    }
+  })
+}
+
+test('word marks work in files with no known language too', async ($, on) => {
+  engine(on)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/NOTES.md', structuredPatch: [{ oldStart: 3, newStart: 3, lines: ['-Reads the level every 30 seconds.', '+Reads the level every 60 seconds.'] }] }))
+    expect((await litOf(ui)).map(l => l.slice(0, 2))).toEqual([['30', wordTint(t.codeText, t.codeFlag)], ['60', wordTint(t.codeText, t.number)]])
+    await ui.unmount()
+  }
+})
+
+test('added or removed lines with no partner, and rewritten lines, get no word marks', async ($, on) => {
+  engine(on)
+  const hunks = [
+    [' const a = 1', '+const added = 2'],
+    ['-const gone = 2', ' const a = 1'],
+    ['-return names.slice(0, LIMIT).map(greet)', '+const picked = names.slice(0, limit)'],
+    ['-  "endpoint": "https://example.com/api",', '+  "timeout": 10,', '+  "endpoint": "https://example.com/api/v2",'],
+    ['-  indented()', '+      indented()'],
+  ]
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const lines of hunks) {
+      const ui = await $.ui.mount(editResult(surface, 'Edit', { filePath: '/tmp/x.ts', structuredPatch: [{ oldStart: 1, newStart: 1, lines }] }))
+      expect([lines[0], await litOf(ui)]).toEqual([lines[0], []])
+      await ui.unmount()
+    }
+  }
+})
+
+test('changed lines on either side of a no-newline marker still pair up for word marks', async ($, on) => {
+  engine(on)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(editResult(surface, 'Edit', noNewline))
+    expect((await litOf(ui)).map(l => l[0])).toEqual(['0', '1'])
+    await ui.unmount()
+  }
 })
 
 test('plain code on a tint is lifted to 4.5:1 when the code text color reads under it', { options: { codeTextColor: '#777777' } }, async ($, on) => {
