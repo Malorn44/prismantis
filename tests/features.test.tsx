@@ -2259,6 +2259,20 @@ test('clickable diff rows, a new file\'s preview, and new and removed files spen
   }
 })
 
+test('an opened new file of long lines past the node allowance keeps each plain line as one row and stays under the ceiling', async ($, on) => {
+  engine(on)
+  claudeAt(on, '2.1.295')
+  if (!(await takesTextButtons($))) return
+  const body = Array.from({ length: 400 }, (_, i) => `${i} ${'word '.repeat(600)}`)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...editResult(surface, 'Write', writeNew('/tmp/long.txt', body)), viewport: { columns: 80, rows: 40 } })
+    await drewItself(ui)
+    await ui.press({ key: 'fold' })
+    expect(nodeCount(await ui.drawn())).toBeLessThan(20000)
+    await ui.unmount()
+  }
+})
+
 test('a no-newline marker in a shell edit diff draws harmlessly as its own row', async ($, on) => {
   engine(on)
   const hunks = [{ oldStart: 1, newStart: 1, oldLines: 1, newLines: 1, lines: ['-old', '\\ No newline at end of file', '+new', '\\ No newline at end of file'] }]

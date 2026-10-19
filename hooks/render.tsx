@@ -1630,7 +1630,7 @@ const PLAIN_LINE = 7
 const previewRows = (pieces: Piece[], text: string, room: number | undefined, budget: Budget): Piece[][] => {
   const rich = visualRows(pieces, room)
   if (spend(budget, Math.max(0, rich.reduce((n, part) => n + PREVIEW_ROW + partCost(part), 0) - PLAIN_LINE))) return rich
-  return visualRows(tabbed(plainParts(text)[0]!), room)
+  return [tabbed(plainParts(text)[0]!)]
 }
 
 const previewText = (el: ElementTable, style: Style, path: string, shown: string[], key: string, band: string | undefined, columns: number | undefined, budget: Budget): RenderNode[] => {
