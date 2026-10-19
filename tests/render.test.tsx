@@ -273,10 +273,10 @@ for (const surface of SURFACES) test(`copyButtonStyle hover hides every copy but
   expect(await ui.findAll({ type: 'Button' })).toHaveLength(5)
   expect(await floatingCopies(ui)).toEqual(['⧉ md ⧉ art', '⧉ copy', '⧉ copy', '⧉ copy reply'])
   expect(reveals(tree).flatMap(({ node }) => withParents(node).filter(({ node: n }) => n.type === 'Button'))).toHaveLength(5)
-  for (const { node } of reveals(tree).filter(({ node }) => labelsOf(node) !== '⧉ copy reply')) {
+  for (const { node } of reveals(tree)) {
     const scope = node.hover?.scope ?? ''
     expect(node.hover).toEqual({ scope, display: 'flex' })
-    expect(markersOf(tree, scope).map(({ node: marker }) => ({ text: shownText(marker), flows: inFlow(marker) }))).toEqual([{ text: '⧉', flows: true }])
+    expect(markersOf(tree, scope).map(({ node: marker }) => ({ text: shownText(marker), flows: inFlow(marker) }))).toEqual([{ text: '⧉', flows: !scope.endsWith(':reply') }])
   }
   await ui.press({ key: 'copy1' })
   expect(copied).toEqual(['ls -la'])
@@ -317,9 +317,11 @@ for (const surface of SURFACES) test(`copyButtonStyle hover gives every block wi
   const ui = await $.ui.mount({ ...draw(text), surface })
   const tree = (await ui.drawn()) as DrawnNode
   const marks = withParents(tree).filter(({ node }) => node.type === 'Text' && shownText(node) === '⧉')
-  expect(marks).toHaveLength(6)
+  expect(marks).toHaveLength(7)
   for (const { node } of marks) expect(node.props?.dimColor).toBe(true)
-  for (const { parent } of marks) expect({ scoped: parent!.hover?.scope !== undefined, flows: inFlow(parent!) }).toEqual({ scoped: true, flows: true })
+  const blocks = marks.map(({ parent }) => parent!).filter(box => !box.hover?.scope?.endsWith(':reply'))
+  expect(blocks).toHaveLength(6)
+  for (const box of blocks) expect({ scoped: box.hover?.scope !== undefined, flows: inFlow(box) }).toEqual({ scoped: true, flows: true })
   for (const key of ['c0', 'c2', 'c3', 'c4', 'c5']) expect(((await ui.find({ key }))?.children[0] as DrawnNode).props?.columnGap).toBe(1)
   await ui.unmount()
 })
@@ -330,6 +332,28 @@ test('copyButtonStyle hover keeps a long code label and its ⧉ on one row at th
   const header = code.children.find((child): child is DrawnNode => !!child && typeof child === 'object' && (child as DrawnNode).props?.justifyContent === 'space-between')!
   const label = shownText(drawnKids(header)[0]!)
   expect(width(label) + (header.props?.columnGap as number) + 1).toBeLessThanOrEqual(code.props.minWidth as number)
+  await ui.unmount()
+})
+
+for (const surface of SURFACES) test(`copyButtonStyle hover puts the reply's ⧉ in its bottom-right corner, in a gutter of its own, with copy reply drawn over it, on ${surface}`, { options: { copyButtonStyle: 'hover' } }, async $ => {
+  for (const text of [COPY_SAMPLE, 'שלום עולם']) {
+    const ui = await $.ui.mount({ ...draw(text), surface })
+    const anchor = await ui.find({ key: 'reply' })
+    expect({ position: anchor?.props.position, bottom: anchor?.props.bottom, right: anchor?.props.right, text: anchor?.text }).toEqual({ position: 'absolute', bottom: 0, right: -2, text: '⧉⧉ copy reply' })
+    const reveal = (anchor?.children ?? []).find((child): child is DrawnNode => !!child && typeof child === 'object' && (child as DrawnNode).props?.display === 'none')
+    expect({ top: reveal?.props?.top, right: reveal?.props?.right }).toEqual({ top: 0, right: 0 })
+    const row = drawnKids((await ui.drawn()) as DrawnNode)
+    expect({ width: row.at(-1)?.props?.width, children: row.at(-1)?.children ?? [] }).toEqual({ width: 2, children: [] })
+    await ui.unmount()
+  }
+})
+
+for (const surface of SURFACES) test(`copyButtonStyle hover shows nothing while the pointer is on a block, only on its marker, on ${surface}`, { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw(`${COPY_SAMPLE}\n\n- item\n  \`\`\`\n  v\n  \`\`\``), surface })
+  const tree = (await ui.drawn()) as DrawnNode
+  const shown = withParents(tree).filter(({ node }) => node.hover?.display === 'flex')
+  expect(shown.length).toBeGreaterThan(0)
+  for (const { node } of shown) expect(markersOf(tree, node.hover?.scope ?? '').length).toBe(1)
   await ui.unmount()
 })
 

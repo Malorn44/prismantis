@@ -11,7 +11,7 @@ import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
 import type { CopyButton, Fold, TerminalEnv } from './render'
-import { bashEdits, drawMath, drawsHyperlinks, editNotes, fileRoot, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, markerRoom, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import { MARK, bashEdits, drawMath, drawsHyperlinks, editNotes, fileRoot, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, markerRoom, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import type { SetupStep } from './help'
 import { HINT, ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, THEME_PREVIEW, findSetup, helpText, languageShowcase, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
@@ -330,9 +330,17 @@ const drawMarkdown = ($: EngineInterface, el: ReturnType<EngineInterface['ui']['
   const elements = renderBlocks(el, notes ? { ...style, noteKey: instanceKey(notes.id) } : style, blocks, columns, drawMath(el, style, blocks, drawn), copy, folder($, el, open), tip)
   const button = reply === undefined ? null : copy(reply, 'reply', '⧉ copy reply')
   if (!button) return elements
-  return style.copyButtonStyle === 'hover'
-    ? [...elements, <el.Box position="absolute" bottom={0} right={0} display="none" hover={{ display: 'flex' }}>{button}</el.Box>]
-    : [...elements, <el.Box key="reply" alignSelf="flex-end">{button}</el.Box>]
+  return [...elements, style.copyButtonStyle === 'hover' ? replyMarker(el, button, notes?.id) : <el.Box key="reply" alignSelf="flex-end">{button}</el.Box>]
+}
+
+const replyMarker = (el: ReturnType<EngineInterface['ui']['resolve']>, button: RenderElement, id?: string) => {
+  const scope = `copy:${id === undefined ? '' : instanceKey(id)}:reply`
+  return (
+    <el.Box key="reply" position="absolute" bottom={0} right={-MARK} hover={{ scope }}>
+      <el.Text dimColor>⧉</el.Text>
+      <el.Box position="absolute" top={0} right={0} display="none" hover={{ scope, display: 'flex' }}>{button}</el.Box>
+    </el.Box>
+  )
 }
 
 const THEME_ARGS = [...PRESET_NAMES, 'random']
@@ -751,14 +759,17 @@ export const register: Register = (on, options) => {
     const pictures = await picturesOf($, style, probes, e.surface, blocks)
     const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     const open = await read($, unfolded)
+    const reply = blocks.length > 1 || hasRtl(e.props.text) ? e.props.text : undefined
+    const corner = reply !== undefined && markerRoom(surfaceStyle) > 0
     return (
       <Box key="msg" flexDirection="row">
         <Box width={2} flexShrink={0}>
           <Text color={style.theme.accent}>{e.props.isFirstOfReply ? '●' : ' '}</Text>
         </Box>
         <Box flexDirection="column" rowGap={1} flexGrow={1}>
-          {drawMarkdown($, el, narration ? { ...surfaceStyle, narration } : surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, blocks.length > 1 || hasRtl(e.props.text) ? e.props.text : undefined, open, { id: e.requestId, press: reach.marks })}
+          {drawMarkdown($, el, narration ? { ...surfaceStyle, narration } : surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, reply, open, { id: e.requestId, press: reach.marks })}
         </Box>
+        {corner ? <Box width={MARK} flexShrink={0} /> : null}
       </Box>
     )
   })
