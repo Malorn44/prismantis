@@ -1146,10 +1146,10 @@ const bashEdit = (stdout = '', more = 0) => ({
   },
 })
 
-test('shell edits read one diff per file and a count of files not shown', () => {
-  expect(bashEdits(bashEdit('', 3))?.files.map(f => [f.path, f.rows.map(r => `${r.num}${r.mark}${r.text}`)])).toEqual([
+test('shell edits read a diff per changed file, the lines of each new file, and a count of files not shown', () => {
+  expect(bashEdits(bashEdit('', 3))?.files.map(f => (f.kind === 'modified' ? [f.path, f.rows.map(r => `${r.num}${r.mark}${r.text}`)] : f))).toEqual([
     ['/home/demo/app/src/app.ts', ['4 const a = 1', '5-const b = 2', '5+const b = 3', '6+const c = 4']],
-    ['/home/demo/app/NOTES.md', ['1+one', '2+two']],
+    { kind: 'created', path: '/home/demo/app/NOTES.md', lines: ['one', 'two'] },
   ])
   expect(bashEdits(bashEdit('', 3))?.more).toBe(3)
   expect(bashEdits({ stdout: 'x' })).toBeUndefined()
@@ -1160,21 +1160,22 @@ test('shell edits read one diff per file and a count of files not shown', () => 
 })
 
 for (const toolOutput of ['full', 'quiet'] as const) {
-  test(`shell edits draw the same diff card as the Edit tool, one per file (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
+  test(`shell edits draw the same diff card as the Edit tool, one per changed file (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
     engine(on)
     mock.env(on, { HOME: '/home/demo' })
     on('session.root', () => ({ value: '/home/demo/app' }))
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount(editResult(surface, 'Bash', bashEdit('', 2)))
       expect((await ui.find({ type: 'Text', text: /^src\/app\.ts $/ }))?.props.color).toBe(t.path)
-      expect((await ui.find({ type: 'Text', text: /^NOTES\.md $/ }))?.props.color).toBe(t.path)
       expect((await ui.find({ type: 'Text', text: /^\+2$/ }))?.props.color).toBe(t.number)
       expect((await ui.find({ type: 'Text', text: /^−1$/ }))?.props.color).toBe(t.codeFlag)
-      expect((await ui.find({ type: 'Text', text: /^−0$/ }))?.props.dimColor).toBe(true)
+      expect(await ui.find({ type: 'Text', text: /^−0$/ })).toBeUndefined()
       const row = (text: RegExp) => ui.find({ type: 'Box', text })
       expect((await row(/^6 \+ const c = 4$/))?.props.backgroundColor).toBe(diffTint(t.codeText, t.number))
       expect((await row(/^5 - const b = 2$/))?.props.backgroundColor).toBe(diffTint(t.codeText, t.codeFlag))
       expect((await row(/^2 \+ two$/))?.props.backgroundColor).toBe(diffTint(t.codeText, t.number))
+      expect(await ui.find({ type: 'Text', text: /^Created NOTES\.md \(2 lines\)$/ })).toBeDefined()
+      expect((await ui.find({ type: 'Text', text: /^NOTES\.md$/ }))?.props.color).toBe(t.path)
       expect((await ui.find({ type: 'Text', text: /^const c = 4$/ }))?.props.color).toBe(t.codeText)
       expect((await ui.find({ type: 'Text', text: /^… \+2 more files$/ }))?.props.dimColor).toBe(true)
       expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
@@ -1233,6 +1234,92 @@ test('failed shell edits, diffs the card cannot read and tool rows off go to the
       await ui.unmount()
     }
   }
+})
+
+const rowsOf = async (ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text: string }[]> }) => {
+  const blocks = (await ui.findAll({ type: 'Text' })).map(r => r.text.split('\n').map(l => l.trimEnd())).filter(lines => lines.every(l => /^ *\d+ ( |[+-] )/.test(l)))
+  const written = blocks.reduce<string[]>((a, b) => (b.length > a.length ? b : a), [])
+  return [...written, ...(await ui.findAll({ type: 'Box' })).filter(b => /^d\d+$/.test(b.key ?? '')).map(b => b.text)]
+}
+const numberedRows = (lines: string[], mark?: '+' | '-') => lines.map((l, i) => `${String(i + 1).padStart(String(lines.length).length)}${mark ? ` ${mark} ` : '  '}${l}`)
+
+const madeFile = (name: string, body: string[]) =>
+  ({ filePath: `/home/demo/app/${name}`, hunks: body.length ? [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: body.length, lines: body.map(l => `+${l}`) }] : [], created: true as const })
+const removedFile = (name: string, body: string[]) =>
+  ({ filePath: `/home/demo/app/${name}`, hunks: body.length ? [{ oldStart: 1, oldLines: body.length, newStart: 0, newLines: 0, lines: body.map(l => `-${l}`) }] : [], deleted: true as const })
+const shellFiles = (...files: unknown[]) => ({ stdout: '', stderr: '', interrupted: false, bashEditDiff: { files, moreFiles: 0 } })
+const inDemoApp = (on: On) => {
+  mock.env(on, { HOME: '/home/demo' })
+  on('session.root', () => ({ value: '/home/demo/app' }))
+}
+const numbered = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`)
+
+test('shell edits tell new and removed files apart from changed ones', () => {
+  const kinds = (...files: unknown[]) => bashEdits(shellFiles(...files))?.files.map(f => `${f.kind} ${f.path}`)
+  expect(kinds(removedFile('a.txt', ['one', 'two']), madeFile('b.txt', ['one', 'two']))).toEqual(['deleted /home/demo/app/a.txt', 'created /home/demo/app/b.txt'])
+  expect(kinds(madeFile('empty.txt', []), { filePath: '/home/demo/app/src/app.ts', hunks: patch.structuredPatch })).toEqual(['created /home/demo/app/empty.txt', 'modified /home/demo/app/src/app.ts'])
+  expect(bashEdits(shellFiles(removedFile('old.txt', ['alpha', 'beta'])))?.files).toEqual([{ kind: 'deleted', path: '/home/demo/app/old.txt', lines: ['alpha', 'beta'] }])
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a file a shell command creates shows its first 10 lines as added diff lines under a Created header on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    const body = numbered(14)
+    const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(madeFile('notes.py', body))))
+    expect(await ui.find({ type: 'Text', text: /^Created notes\.py \(14 lines\)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\+14$/ })).toBeUndefined()
+    expect(await rowsOf(ui)).toEqual(numberedRows(body.slice(0, 10), '+'))
+    expect((await ui.find({ type: 'Box', text: /^ 1 \+ line 1$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.diffAdded))
+    const fold = await ui.find({ key: 'fold0' })
+    expect([fold?.type, fold?.props.variant, fold?.props.label]).toEqual(['Button', 'secondary', '+4 more lines'])
+    expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    await ui.press({ key: 'fold0' })
+    expect(await rowsOf(ui)).toEqual(numberedRows(body, '+'))
+    expect((await ui.find({ key: 'fold0' }))?.props.label).toBe('show less')
+    await ui.press({ key: 'fold0' })
+    expect(await rowsOf(ui)).toEqual(numberedRows(body.slice(0, 10), '+'))
+    await ui.unmount()
+  })
+
+  test(`a short new file shows whole, and an empty one says so, on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(madeFile('one.txt', ['only']), madeFile('empty.txt', []))))
+    expect(await ui.find({ type: 'Text', text: /^Created one\.txt \(1 line\)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Created empty\.txt \(empty\)$/ })).toBeDefined()
+    expect(await rowsOf(ui)).toEqual(['1 + only'])
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`new and removed files open from a label button on ${surface}`, async ($, on) => {
+    engine(on)
+    inDemoApp(on)
+    const ui = await $.ui.mount(editResult(surface, 'Bash', shellFiles(madeFile('notes.txt', numbered(14)), removedFile('old.txt', ['alpha', 'beta']))))
+    expect((await ui.find({ key: 'fold0' }))?.props.label).toBe('+4 more lines')
+    expect((await ui.find({ key: 'fold0' }))?.children).toEqual([])
+    expect((await ui.find({ key: 'fold1' }))?.props.label).toBe('show 2 lines')
+    expect(await ui.find({ type: 'Text', text: /^Deleted old\.txt \(2 lines\)$/ })).toBeDefined()
+    expect((await rowsOf(ui)).length).toBe(10)
+    await ui.press({ key: 'fold1' })
+    expect((await rowsOf(ui)).slice(10)).toEqual(['1 - alpha', '2 - beta'])
+    expect((await ui.find({ key: 'fold1' }))?.props.label).toBe('show less')
+    await ui.unmount()
+  })
+}
+
+test('changed files beside new ones still draw as diff cards, notes and all', async ($, on) => {
+  engine(on)
+  inDemoApp(on)
+  const ui = await $.ui.mount(editResult('terminal', 'Bash', shellFiles({ filePath: '/home/demo/app/src/app.ts', hunks: patch.structuredPatch }, madeFile('empty.txt', []), removedFile('old.txt', ['x']))))
+  expect((await ui.find({ type: 'Text', text: /^src\/app\.ts $/ }))?.props.color).toBe(t.path)
+  expect((await ui.find({ type: 'Box', text: /^6 \+ const c = 4$/ }))?.props.backgroundColor).toBe(diffTint(t.codeText, t.number))
+  expect(await ui.find({ type: 'Text', text: /^Created empty\.txt \(empty\)$/ })).toBeDefined()
+  expect(await ui.find({ text: /^Deleted old\.txt \(1 line\)$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
@@ -1716,6 +1803,27 @@ test('five opened shell edit cards of dense lines share one node allowance and s
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
     expect(nodeCount(await ui.drawn())).toBeLessThan(20000)
     await ui.unmount()
+  }
+})
+
+test('new and removed files spend the same node allowance as diff cards and stay under the ceiling', async ($, on) => {
+  engine(on)
+  const body = dense(450).map(l => l.slice(1))
+  const results = [
+    ['Bash', shellFiles(madeFile('made.json', body)), 'fold0'],
+    ['Bash', shellFiles(removedFile('gone.json', body)), 'fold0'],
+  ] as const
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const [n, [tool, output, fold]] of results.entries()) {
+      const mounted = editResult(surface, tool, output)
+      const ui = await $.ui.mount({ ...mounted, props: { ...mounted.props, tool_use_id: `dense-${n}-${surface}` } })
+      expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+      await ui.press({ key: fold })
+      expect([tool, n, nodeCount(await ui.drawn()) < 10000]).toEqual([tool, n, true])
+      if (n < 1) expect((await tokensOf(ui, /^\{"k0": 0, /)).length).toBeGreaterThan(0)
+      expect((await ui.find({ type: 'Text', text: /^\{"k0": 4788, / }))?.children).toHaveLength(1)
+      await ui.unmount()
+    }
   }
 })
 

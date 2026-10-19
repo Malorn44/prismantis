@@ -758,7 +758,8 @@ const renderList = (el: ElementTable, style: Style, block: Extract<Block, { kind
 
 export type CopyButton = (text: string | (() => string), key: string, label?: string, html?: () => string) => RenderElement | null
 export type Drawn = Map<number, { element?: RenderElement; art?: string; note?: string }>
-export type Fold = (id: string, hidden: number, key: string) => { folded: boolean; element: RenderElement } | null
+export type FoldLook = { label?: string }
+export type Fold = (id: string, hidden: number, key: string, look?: FoldLook) => { folded: boolean; element: RenderElement } | null
 export type Tip = (note: number) => (() => void) | undefined
 
 export const instanceKey = (id: string): string => {
@@ -1470,9 +1471,11 @@ export const renderDiffCard = (el: ElementTable, style: Style, output: unknown, 
   return diffRow(el, style, [diffBox(el, style, rows, fold, id, '', typeof path === 'string' ? path : undefined, { left: DIFF_EXTRA }, columns)], false)
 }
 
-type EditedFile = { path: string; rows: DiffLine[] }
+type WholeFile = { kind: 'created' | 'deleted'; path: string; lines: string[] }
 
-export type BashEdits = { files: EditedFile[]; more: number; shared: boolean }
+export type FileChange = { kind: 'modified'; path: string; rows: DiffLine[] } | WholeFile
+
+export type BashEdits = { files: FileChange[]; more: number; shared: boolean }
 
 export const EDIT_NOTES = {
   first: 'every file that changed while this ran, by this command or anything else: a view of the changes, not an audit of the command',
@@ -1486,13 +1489,19 @@ export const bashEdits = (output: unknown): BashEdits | undefined => {
   if (diff === null || typeof diff !== 'object') return undefined
   const { files, moreFiles, shared } = diff as { files?: unknown; moreFiles?: unknown; shared?: unknown }
   if (!Array.isArray(files) || files.length === 0) return undefined
-  const edited: EditedFile[] = []
-  for (const file of files as ({ filePath?: unknown; hunks?: unknown } | null)[]) {
-    const rows = diffLines({ structuredPatch: file?.hunks })
-    if (typeof file?.filePath !== 'string' || rows === undefined) return undefined
-    edited.push({ path: file.filePath, rows })
-  }
-  return { files: edited, more: typeof moreFiles === 'number' && moreFiles > 0 ? moreFiles : 0, shared: shared === true }
+  const changed = files.map(fileChange)
+  if (!changed.every((f): f is FileChange => f !== undefined)) return undefined
+  return { files: changed, more: typeof moreFiles === 'number' && moreFiles > 0 ? moreFiles : 0, shared: shared === true }
+}
+
+const fileChange = (entry: unknown): FileChange | undefined => {
+  const file = entry as { filePath?: unknown; hunks?: unknown; created?: unknown; deleted?: unknown } | null
+  const kind = file?.created === true ? 'created' : file?.deleted === true ? 'deleted' : 'modified'
+  const rows = kind !== 'modified' && Array.isArray(file?.hunks) && file.hunks.length === 0 ? [] : diffLines({ structuredPatch: file?.hunks })
+  if (typeof file?.filePath !== 'string' || rows === undefined) return undefined
+  if (kind === 'modified') return { kind, path: file.filePath, rows }
+  const mark = kind === 'created' ? '+' : '-'
+  return { kind, path: file.filePath, lines: rows.filter(r => r.mark === mark).map(r => r.text) }
 }
 
 export const withoutBashEdits = (output: unknown): unknown => {
@@ -1506,9 +1515,57 @@ export const hasShellOutput = (output: unknown): boolean => {
   return lines(out.stdout).length + lines(out.stderr).length > 0
 }
 
+const PREVIEW_LINES = 10
+
+const lineCount = (n: number): string => (n === 0 ? 'empty' : `${n} ${n === 1 ? 'line' : 'lines'}`)
+
+const wholeHead = (el: ElementTable, style: Style, file: WholeFile): RenderElement => (
+  <el.Text key="head">
+    {file.kind === 'created' ? 'Created ' : 'Deleted '}
+    <el.Text color={style.theme.path}>{shortPath(style, file.path)}</el.Text>
+    <el.Text dimColor>{` (${lineCount(file.lines.length)})`}</el.Text>
+  </el.Text>
+)
+
+type RowsOf = { columns: number | undefined; budget: Budget }
+
+const wholeRows = (el: ElementTable, style: Style, file: WholeFile, shown: number, { columns, budget }: RowsOf): RenderElement | null => {
+  const lines = file.lines.slice(0, shown)
+  if (lines.length === 0) return null
+  const diff = lines.map((text, i): DiffLine => ({ mark: file.kind === 'created' ? '+' : '-', num: i + 1, text, hunk: 0 }))
+  return <el.Box key="rows" flexDirection="column">{diffBody(el, style, diff, file.path, columns, budget)}</el.Box>
+}
+
+type Toggle = ReturnType<Fold>
+
+const wholeToggle = (fold: Fold, file: WholeFile, id: string, key: string): Toggle => {
+  const n = file.lines.length
+  if (file.kind === 'created') return n > PREVIEW_LINES ? fold(id, n - PREVIEW_LINES, `fold${key}`) : null
+  return n > 0 ? fold(id, n, `fold${key}`, { label: `show ${lineCount(n)}` }) : null
+}
+
+const wholeFileCard = (el: ElementTable, style: Style, file: WholeFile, fold: Fold, id: string, key: string, budget: Budget, columns: number | undefined): RenderElement => {
+  const n = file.lines.length
+  const created = file.kind === 'created'
+  const toggle = wholeToggle(fold, file, id, key)
+  const shown = Math.min(n, toggle?.folded === false ? DIFF_MAX : created ? PREVIEW_LINES : 0)
+  const rows = wholeRows(el, style, file, shown, { columns, budget })
+  const rest = n > shown && (toggle ? !toggle.folded : created)
+  return (
+    <el.Box key={`file${key}`} flexDirection="column">
+      {wholeHead(el, style, file)}
+      {rows}
+      {rest ? <el.Text key="rest" dimColor>{`… +${n - shown} lines`}</el.Text> : null}
+      {toggle?.element ?? null}
+    </el.Box>
+  )
+}
+
 export const renderBashEdits = (el: ElementTable, style: Style, edits: BashEdits, fold: Fold, id: string, below = false, notes: readonly string[] = [], columns?: number): RenderElement => {
   const budget = { left: DIFF_EXTRA }
-  const cards = edits.files.map((file, i) => diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), file.path, budget, columns, shortPath(style, file.path)))
+  const cards = edits.files.map((file, i) =>
+    file.kind === 'modified' ? diffBox(el, style, file.rows, fold, `${id}:${i}`, String(i), file.path, budget, columns, shortPath(style, file.path))
+    : wholeFileCard(el, style, file, fold, `${id}:${i}`, String(i), budget, columns))
   const more = edits.more ? [<el.Text key="more" dimColor>{`… +${edits.more} more ${edits.more === 1 ? 'file' : 'files'}`}</el.Text>] : []
   const said = notes.map((note, i) => <el.Text key={`note${i}`} dimColor>{`(${note})`}</el.Text>)
   return diffRow(el, style, [...cards, ...more, ...said], below)
