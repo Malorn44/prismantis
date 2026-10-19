@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 import type { ClipboardBackend } from '../hooks/clipboard'
 import { clipboardCommand } from '../hooks/clipboard'
@@ -6,6 +6,7 @@ import { tableHtml } from '../hooks/html'
 import { mathOf } from '../hooks/latex'
 import type { Block } from '../hooks/markdown'
 import { parse } from '../hooks/markdown'
+import { claudeAt, linksHttp } from './claude-version'
 
 const HOSTILE = [
   `'; do shell script "rm -rf ~" --`,
@@ -53,10 +54,34 @@ test('terminal control sequences in a reply are never drawn', async $ => {
   expect(texts.filter(t => /[\u001b\u0007\u009b]/.test(t))).toEqual([])
 })
 
-test('only web links in a reply are clickable, in every block', async $ => {
-  const links = '[ok](https://a.dev) [a](smb://host/share) [b](file:///Applications/Calculator.app) [c](ms-msdt:/id) [d](javascript:alert(1))'
-  const ui = await $.ui.mount(reply(`${links}\n\n> ${links}\n\n> [!NOTE]\n> ${links}\n\n- x\n  - ${links}\n\n| a |\n|---|\n| ${links} |\n\nn[^a]\n\n[^a]: ${links}`))
+const TARGETS: [href: string, linkedWithFileLinks: boolean][] = [
+  ['https://a.dev', true],
+  ['file:///Applications/Calculator.app', true],
+  ['FILE:///C:/Windows/System32/cmd.exe', true],
+  ['file://evil.example/share/x.exe', true],
+  ['smb://host/share', false],
+  ['ms-msdt:/id', false],
+  ['javascript:alert(1)', false],
+]
+
+const everyBlock = (links: string) => `${links}\n\n> ${links}\n\n> [!NOTE]\n> ${links}\n\n- x\n  - ${links}\n\n| a |\n|---|\n| ${links} |\n\nn[^a]\n\n[^a]: ${links}`
+
+const targetLinks = TARGETS.map(([href], i) => `[t${i}](${href})`).join(' ')
+
+test('only web links in a reply are clickable, in every block, while file links are off', async $ => {
+  const ui = await $.ui.mount(reply(everyBlock(targetLinks)))
   const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
   expect(hrefs.length).toBe(6)
   expect(hrefs.filter(h => h !== 'https://a.dev')).toEqual([])
+})
+
+test('with file links on, only web and file links in a reply are clickable, file links as written, in every block', async ($, on) => {
+  claudeAt(on, '2.1.289')
+  mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me' })
+  if (!(await linksHttp($.ui.mount(reply('[x](file:///x)'))))) return
+  const ui = await $.ui.mount(reply(everyBlock(targetLinks)))
+  const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
+  const allowed = TARGETS.filter(([, linked]) => linked).map(([href]) => href)
+  expect(hrefs).toEqual(Array.from({ length: 6 }, () => allowed).flat())
+  await ui.unmount()
 })
