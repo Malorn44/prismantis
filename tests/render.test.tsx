@@ -2,7 +2,9 @@ import { expect, test } from 'claude-code/testing'
 
 import { parse } from '../hooks/markdown'
 import { PRESETS } from '../hooks/presets'
+import { MARK, width } from '../hooks/render'
 import { resolveStyle } from '../hooks/theme'
+import { clipboardEnv, startSession } from './clipboard-env'
 
 const TABLE = [
   '| Service | Regions | Version |',
@@ -248,51 +250,107 @@ const COPY_SAMPLE = `${TABLE}\n\n\`\`\`bash\nls -la\n\`\`\`\n\n> reply text\n\np
 const floatingCopies = async (ui: { findAll: (query: { type: string }) => Promise<{ props: Record<string, unknown>; text?: string }[]> }) =>
   (await ui.findAll({ type: 'Box' })).filter(b => b.props.position === 'absolute' && b.props.display === 'none').map(b => b.text)
 
-type DrawnNode = { props?: Record<string, unknown>; hover?: unknown; children?: unknown[] }
-const floatingReveals = (node: DrawnNode): unknown[] => [
-  ...(node.props?.position === 'absolute' ? [node.hover] : []),
-  ...(node.children ?? []).flatMap(child => (child && typeof child === 'object' ? floatingReveals(child as DrawnNode) : [])),
-]
+type DrawnNode = { type?: string; props?: Record<string, unknown>; hover?: { scope?: string; display?: string }; children?: unknown[] }
+const drawnKids = (node: DrawnNode) => (node.children ?? []).filter((child): child is DrawnNode => !!child && typeof child === 'object')
+const withParents = (node: DrawnNode, parent?: DrawnNode): { node: DrawnNode; parent?: DrawnNode }[] => [{ node, parent }, ...drawnKids(node).flatMap(child => withParents(child, node))]
+const shownText = (node: DrawnNode): string => (node.children ?? []).map(child => (typeof child === 'string' ? child : child && typeof child === 'object' ? shownText(child as DrawnNode) : '')).join('')
+const holdsButton = (node: DrawnNode): boolean => node.type === 'Button' || drawnKids(node).some(holdsButton)
+const inFlow = (node: DrawnNode) => node.props?.position !== 'absolute'
+const reveals = (tree: DrawnNode) => withParents(tree).filter(({ node }) => holdsButton(node) && node.props?.position === 'absolute' && node.props.display === 'none')
+const markersOf = (tree: DrawnNode, scope: string) => withParents(tree).filter(({ node }) => node.hover?.scope === scope && node.props?.display !== 'none')
 
-test('copyButtonStyle hover floats every copy button out of the flow, shown only while its block is hovered', { options: { copyButtonStyle: 'hover' } }, async ($, on) => {
+const labelsOf = (node: DrawnNode) => withParents(node).filter(({ node: n }) => n.type === 'Button').map(({ node: n }) => n.props?.label).join(' ')
+const SURFACES = ['terminal', 'desktop'] as const
+
+for (const surface of SURFACES) test(`copyButtonStyle hover hides every copy button until the pointer is on its ⧉ marker on ${surface}`, { options: { copyButtonStyle: 'hover' } }, async ($, on) => {
   const copied: string[] = []
   on('ui.copy', (_, e) => {
     copied.push(e.text)
     return { value: { isCopied: true as const } }
   })
-  const ui = await $.ui.mount({ ...draw(COPY_SAMPLE), surface: 'terminal' })
+  const ui = await $.ui.mount({ ...draw(COPY_SAMPLE), surface })
+  const tree = (await ui.drawn()) as DrawnNode
   expect(await ui.findAll({ type: 'Button' })).toHaveLength(5)
-  expect(await floatingCopies(ui)).toEqual(['⧉ md⧉ art', '⧉ copy', '⧉ copy', '⧉ copy reply'])
-  expect(floatingReveals((await ui.drawn()) as DrawnNode)).toEqual(Array(4).fill({ display: 'flex' }))
+  expect(await floatingCopies(ui)).toEqual(['⧉ md ⧉ art', '⧉ copy', '⧉ copy', '⧉ copy reply'])
+  expect(reveals(tree).flatMap(({ node }) => withParents(node).filter(({ node: n }) => n.type === 'Button'))).toHaveLength(5)
+  for (const { node } of reveals(tree).filter(({ node }) => labelsOf(node) !== '⧉ copy reply')) {
+    const scope = node.hover?.scope ?? ''
+    expect(node.hover).toEqual({ scope, display: 'flex' })
+    expect(markersOf(tree, scope).map(({ node: marker }) => ({ text: shownText(marker), flows: inFlow(marker) }))).toEqual([{ text: '⧉', flows: true }])
+  }
   await ui.press({ key: 'copy1' })
   expect(copied).toEqual(['ls -la'])
   await ui.unmount()
 })
 
-test('copyButtonStyle hover covers only its buttons\' cells, so the rest of the row stays drawn while they show', { options: { copyButtonStyle: 'hover' } }, async $ => {
-  const ui = await $.ui.mount({ ...draw('| Region | p99 |\n|---|---:|\n| eu | 12 |\n\n```bash\nls\n```\n\n> ```bash\n> npm test\n> ```\n>\n> Run that first.'), surface: 'terminal' })
-  const floats = (await ui.findAll({ type: 'Box' })).filter(b => b.props.position === 'absolute' && b.props.display === 'none')
-  expect(floats.map(b => b.text)).toEqual(['⧉ md⧉ art', '⧉ copy', '⧉ copy', '⧉ copy', '⧉ copy reply'])
-  for (const float of floats) {
-    expect(float.props.right).toBe(0)
-    expect(float.props.left).toBeUndefined()
-    expect(float.props.minWidth).toBeUndefined()
-    expect(float.props.width).toBeUndefined()
+for (const surface of SURFACES) test(`copyButtonStyle hover draws a block's buttons over its marker, from the marker's row and side, on ${surface}`, { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw('| Region | p99 |\n|---|---:|\n| eu | 12 |\n\n```bash\nls\n```\n\n> ```bash\n> npm test\n> ```\n>\n> Run that first.'), surface })
+  const tree = (await ui.drawn()) as DrawnNode
+  const floats = reveals(tree).filter(({ node }) => labelsOf(node) !== '⧉ copy reply')
+  expect(floats.map(({ node }) => labelsOf(node))).toEqual(['⧉ md ⧉ art', '⧉ copy', '⧉ copy', '⧉ copy'])
+  for (const { node, parent } of floats) {
+    const flow = drawnKids(parent!).filter(inFlow)
+    const marker = flow.at(-1)!
+    expect(marker.hover?.scope).toBe(node.hover?.scope)
+    expect(['flex-start', 'flex-end']).toContain(marker.props?.alignSelf)
+    expect({ right: node.props?.right, left: node.props?.left, width: node.props?.width, minWidth: node.props?.minWidth }).toEqual({ right: 0, left: undefined, width: undefined, minWidth: undefined })
+    expect(marker.props?.alignSelf === 'flex-end' ? { bottom: node.props?.bottom } : { top: node.props?.top }).toEqual(marker.props?.alignSelf === 'flex-end' ? { bottom: 0 } : { top: 0 })
   }
   await ui.unmount()
 })
 
-test('copyButtonStyle hover makes a block at least as wide as its buttons, so buttons anchored right never run off its left edge', { options: { copyButtonStyle: 'hover' } }, async $ => {
-  const ui = await $.ui.mount({ ...draw('| a |\n|---|\n| 1 |\n\n```\nx\n```'), surface: 'terminal' })
-  expect((await ui.find({ key: 'c0' }))?.props.minWidth).toBe('[ ⧉ md ] [ ⧉ art ]'.length)
-  expect((await ui.find({ key: 'b1' }))?.props.minWidth).toBe('[ ⧉ copy ]'.length)
+for (const surface of SURFACES) test(`copyButtonStyle hover makes a block at least as wide as its buttons, so buttons drawn from its marker never run off its left edge, on ${surface}`, { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw('| a |\n|---|\n| 1 |\n\n```\nx\n```'), surface })
+  expect(((await ui.find({ key: 'c0' }))?.children[0] as DrawnNode).props?.minWidth).toBe('[ ⧉ md ] [ ⧉ art ]'.length)
+  expect((await ui.find({ key: 'b1' }))?.props.minWidth).toBe('── code [ ⧉ copy ]'.length)
   await ui.unmount()
 })
 
-test('copyButtonStyle hover reserves its buttons\' width beside a narrow block, so a table drawn next to it never covers them', { options: { copyButtonStyle: 'hover' } }, async $ => {
-  const ui = await $.ui.mount({ ...draw('| a | b |\n|---|---|\n| 1 | 2 |\n\n| c | d |\n|---|---|\n| 3 | 4 |'), surface: 'terminal' })
-  for (const key of ['c0', 'c1']) expect((await ui.find({ key }))?.props.minWidth).toBe('[ ⧉ md ] [ ⧉ art ]'.length)
+for (const surface of SURFACES) test(`copyButtonStyle hover reserves its buttons' width beside a narrow block, so a table drawn next to it never covers them, on ${surface}`, { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw('| a | b |\n|---|---|\n| 1 | 2 |\n\n| c | d |\n|---|---|\n| 3 | 4 |'), surface })
+  for (const key of ['c0', 'c1']) expect(((await ui.find({ key }))?.children[0] as DrawnNode).props?.minWidth).toBe('[ ⧉ md ] [ ⧉ art ]'.length)
   await ui.unmount()
+})
+
+for (const surface of SURFACES) test(`copyButtonStyle hover gives every block with copy buttons one dim ⧉ in the flow, a column clear of it, on ${surface}`, { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const text = '| a |\n|---|\n| 1 |\n\n```\nx\n```\n\n- y\n\n> z\n\n> [!NOTE]\n> w\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\nplain'
+  const ui = await $.ui.mount({ ...draw(text), surface })
+  const tree = (await ui.drawn()) as DrawnNode
+  const marks = withParents(tree).filter(({ node }) => node.type === 'Text' && shownText(node) === '⧉')
+  expect(marks).toHaveLength(6)
+  for (const { node } of marks) expect(node.props?.dimColor).toBe(true)
+  for (const { parent } of marks) expect({ scoped: parent!.hover?.scope !== undefined, flows: inFlow(parent!) }).toEqual({ scoped: true, flows: true })
+  for (const key of ['c0', 'c2', 'c3', 'c4', 'c5']) expect(((await ui.find({ key }))?.children[0] as DrawnNode).props?.columnGap).toBe(1)
+  await ui.unmount()
+})
+
+test('copyButtonStyle hover keeps a long code label and its ⧉ on one row at the narrowest width', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount({ ...draw('```typescriptreact\nx\n```'), viewport: { columns: 24, rows: 40 }, surface: 'terminal' })
+  const code = (await ui.find({ key: 'b0' }))!
+  const header = code.children.find((child): child is DrawnNode => !!child && typeof child === 'object' && (child as DrawnNode).props?.justifyContent === 'space-between')!
+  const label = shownText(drawnKids(header)[0]!)
+  expect(width(label) + (header.props?.columnGap as number) + 1).toBeLessThanOrEqual(code.props.minWidth as number)
+  await ui.unmount()
+})
+
+const WIDE = `| A | B |\n|---|---|\n| ${'alpha '.repeat(12)}| ${'bravo '.repeat(12)}|\n\nx\n\n\`\`\`mermaid\nflowchart LR\n  A[${'a'.repeat(12)}] --> B[${'b'.repeat(12)}] --> C[${'c'.repeat(12)}]\n\`\`\`\n\ny\n\n\`\`\`mermaid\nflowchart LR\n  A[${'a'.repeat(7)}] --> B[${'b'.repeat(7)}] --> C[${'c'.repeat(7)}] --> D[${'d'.repeat(7)}]\n\`\`\``
+const widest = (node: DrawnNode): number => (node.type === 'Text' ? width(shownText(node)) : Math.max(0, ...drawnKids(node).map(widest)))
+for (const copyButtonStyle of ['inline', 'hover'] as const) test(`copyButtonStyle ${copyButtonStyle} lays a full-width table and diagram out ${copyButtonStyle === 'hover' ? 'two columns narrower, so the ⧉ fits beside them' : 'to the whole width'}`, { options: { copyButtonStyle } }, async $ => {
+  const ui = await $.ui.mount({ ...draw(WIDE), viewport: { columns: 60, rows: 40 }, surface: 'terminal' })
+  const [table, wide, wider] = await Promise.all(['c0', 'c2', 'c4'].map(async key => widest((await ui.find({ key })) as DrawnNode)))
+  if (copyButtonStyle === 'inline') expect({ table, wide: wide! > 56 - MARK - 2 }).toEqual({ table: 56, wide: true })
+  else expect({ table, fits: [wide!, wider!].every(w => w + MARK <= 56) }).toEqual({ table: 56 - MARK, fits: true })
+  await ui.unmount()
+})
+
+test('copyButtonStyle hover drops trailing buttons a narrow terminal has no room for, keeping the first', { options: { copyButtonStyle: 'hover' } }, async ($, on) => {
+  clipboardEnv(on, 'macos')
+  await startSession($, on)
+  for (const [columns, labels] of [[120, '⧉ md ⧉ art ⧉ html'], [24, '⧉ md ⧉ art']] as const) {
+    const ui = await $.ui.mount({ ...draw('| a |\n|---|\n| 1 |'), viewport: { columns, rows: 40 }, surface: 'terminal' })
+    expect(reveals((await ui.drawn()) as DrawnNode).map(({ node }) => withParents(node).filter(({ node: n }) => n.type === 'Button').map(({ node: n }) => n.props?.label).join(' '))).toEqual([labels])
+    await ui.unmount()
+  }
 })
 
 test('copyButtonStyle inline, the default, keeps every copy button in the flow', async $ => {

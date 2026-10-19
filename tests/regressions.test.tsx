@@ -1940,6 +1940,23 @@ test('copyButtonStyle hover anchors the buttons of a right-to-left block at its 
   expect(await anchors('- hello\n- world')).toEqual(['right'])
 })
 
+test('copyButtonStyle hover puts the ⧉ of a right-to-left block at its left, where its lines end', { options: { copyButtonStyle: 'hover', rtl: 'warp' } }, async $ => {
+  const side = async (text: string) => {
+    const ui = await $.ui.mount(mount(text))
+    const row = (await ui.find({ key: 'c0' }))!.children[0] as FloatNode
+    const flow = floatKids(row).filter(child => child.props?.position !== 'absolute')
+    const marked = (child?: FloatNode) => !!(child as { hover?: { scope?: string } } | undefined)?.hover?.scope
+    await ui.unmount()
+    return marked(flow[0]) ? 'left' : marked(flow.at(-1)) ? 'right' : 'none'
+  }
+  expect(await side('- שלום עולם\n- עוד פריט')).toBe('left')
+  expect(await side('> שלום עולם')).toBe('left')
+  expect(await side('> [!NOTE]\n> שלום עולם')).toBe('left')
+  expect(await side('| שם | ערך |\n|---|---|\n| אחד | שתיים |')).toBe('left')
+  expect(await side('- hello שלום\n- world')).toBe('right')
+  expect(await side('- hello\n- world')).toBe('right')
+})
+
 for (const surface of ['terminal', 'desktop'] as const) test(`display math inside a quote or a list item draws as text on ${surface}`, async $ => {
   const ui = await $.ui.mount({ ...mount('> $$\n> E = mc^2 \\cdot \\alpha\n> $$\n\n- energy:\n  ```math\n  \\pi r^2\n  ```'), surface })
   expect((await ui.find({ type: 'Text', text: /^E = mc² · α$/ }))?.props).toMatchObject({ italic: true, color: PRESETS['catppuccin-mocha'].emphasis })
