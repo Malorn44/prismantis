@@ -95,6 +95,35 @@ test('a file that is not a PNG, or an image inside a sentence, stays text', asyn
   expect(reads).toEqual(['/tmp/notes.txt'])
 })
 
+const fileLinksOn = (on: On) => on('session.version', () => ({ value: { version: '2.1.289', base: '2.1.289' } }))
+
+test('with file links on, a file:// image line still draws as an image and links nothing', async ($, on) => {
+  mock.env(on, { ...KITTY, WSL_DISTRO_NAME: 'Ubuntu' })
+  fileLinksOn(on)
+  files(on, { '/home/me/shot.png': PNG_160x80 })
+
+  for (const src of ['file:///home/me/shot.png', '~/shot.png', '/home/me/shot.png']) {
+    const ui = await $.ui.mount(reply(`Here:\n\n![the screenshot](${src})`))
+    expect((await ui.find({ type: 'Image' }))?.props.alt).toBe('the screenshot')
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    await ui.unmount()
+  }
+})
+
+test('with file links on, an image in a terminal without kitty graphics shows its alt text, not a hyperlink', async ($, on) => {
+  mock.env(on, { TERM: 'xterm-256color', HOME: '/home/me', FORCE_HYPERLINK: '1' })
+  fileLinksOn(on)
+  files(on, { '/home/me/shot.png': PNG_160x80 })
+
+  for (const text of ['![the screenshot](file:///home/me/shot.png)', 'see ![the screenshot](file:///home/me/shot.png) here']) {
+    const ui = await $.ui.mount(reply(text))
+    expect(await ui.find({ type: 'Image' })).toBeUndefined()
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    expect((await ui.findAll({ type: 'Text', text: /^the screenshot$/ })).map(n => n.props.color)).toContain(PRESETS['catppuccin-mocha'].link)
+    await ui.unmount()
+  }
+})
+
 test('image sources resolve to local files or inline bytes only', async () => {
   expect(imageFile('file:///tmp/a%20b.png', '/h')).toEqual({ path: '/tmp/a b.png' })
   expect(imageFile('~/a.png', '/h')).toEqual({ path: '/h/a.png' })

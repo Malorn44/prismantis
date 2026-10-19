@@ -10,8 +10,8 @@ import type { ClipboardBackend } from './clipboard'
 import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
-import type { Fold } from './render'
-import { bashEdits, drawMath, editNotes, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import type { Fold, TerminalEnv } from './render'
+import { bashEdits, drawMath, drawsHyperlinks, editNotes, fileRoot, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import type { SetupStep } from './help'
 import { HINT, ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, THEME_PREVIEW, findSetup, helpText, languageShowcase, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
@@ -224,15 +224,41 @@ const htmlBackend = async ($: EngineInterface): Promise<ClipboardBackend | null>
   return await $.env.get('WAYLAND_DISPLAY') || await $.env.get('DISPLAY') ? 'linux' : null
 }
 
-type LinkReach = { http: boolean; editor: boolean; marks: boolean }
+type LinkReach = { http: boolean; editor: boolean; marks: boolean; files: string | null; paths: boolean }
 
 type Probes = { terminal?: Promise<Terminal | null>; htmlCopy?: Promise<ClipboardBackend | null>; links?: Promise<LinkReach>; images?: Promise<boolean> }
 
-const linkReach = ($: EngineInterface, probes: Probes): Promise<LinkReach> =>
-  (probes.links ??= $.session.version().then(v => ({ http: takesHttpLinks(v.base), editor: takesEditorLinks(v.base), marks: takesClickableMarks(v.base) }), () => ({ http: false, editor: false, marks: false })))
+const terminalEnv = async ($: EngineInterface): Promise<TerminalEnv> => ({
+  FORCE_HYPERLINK: await $.env.get('FORCE_HYPERLINK'),
+  TERM_PROGRAM: await $.env.get('TERM_PROGRAM'),
+  TERM_PROGRAM_VERSION: await $.env.get('TERM_PROGRAM_VERSION'),
+  TERM: await $.env.get('TERM'),
+  WT_SESSION: await $.env.get('WT_SESSION'),
+  LC_TERMINAL: await $.env.get('LC_TERMINAL'),
+  VTE_VERSION: await $.env.get('VTE_VERSION'),
+  TERMINAL_EMULATOR: await $.env.get('TERMINAL_EMULATOR'),
+})
+
+const overSsh = async ($: EngineInterface): Promise<boolean> => Boolean(await $.env.get('SSH_CONNECTION') || await $.env.get('SSH_TTY'))
+
+const fileRootOf = async ($: EngineInterface): Promise<string> => {
+  const distro = await $.env.get('WSL_DISTRO_NAME')
+  const linuxTerminal = distro !== undefined && Boolean(await $.env.get('VTE_VERSION') || await $.env.get('KONSOLE_VERSION') || await $.env.get('KITTY_WINDOW_ID'))
+  return fileRoot(linuxTerminal ? undefined : distro)
+}
+
+const readLinkReach = async ($: EngineInterface, style: Style): Promise<LinkReach> => {
+  const base = await $.session.version().then(v => v.base, () => undefined)
+  const http = takesHttpLinks(base)
+  if (http) await locate($, style)
+  const files = http && !(await overSsh($).catch(() => true)) ? await fileRootOf($).catch(() => 'file://') : null
+  return { http, editor: takesEditorLinks(base), marks: takesClickableMarks(base), files, paths: files !== null && drawsHyperlinks(await terminalEnv($).catch(() => ({}))) }
+}
+
+const linkReach = ($: EngineInterface, probes: Probes, style: Style): Promise<LinkReach> => (probes.links ??= readLinkReach($, style))
 
 const fileCard = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, output: unknown, id: string, style: Style, probes: Probes, drawn: () => Style, columns?: number): Promise<RenderElement | undefined> => {
-  const press = (await linkReach($, probes)).marks
+  const press = (await linkReach($, probes, style)).marks
   if (leftToEngine(output, press)) return undefined
   await locate($, style)
   return renderDiffCard(el, drawn(), output, folder($, el, await read($, unfolded), press), id, columns)
@@ -495,7 +521,7 @@ export const register: Register = (on, options) => {
   const picked: Picked = { theme: firstTheme, options, latex }
   const probes: Probes = {}
   const forSurface = (base: Style, surface: RenderSurface, links: LinkReach): Style => {
-    const drawn = surface === 'terminal' ? (links.http || links.editor ? { ...base, httpLinks: links.http, editorLinks: links.editor } : base) : { ...base, htmlCopy: null, nativeCode: true }
+    const drawn = surface === 'terminal' ? (links.http || links.editor ? { ...base, httpLinks: links.http, editorLinks: links.editor, fileLinks: links.files, pathLinks: links.paths } : base) : { ...base, htmlCopy: null, nativeCode: true }
     return surface === 'mobile' && drawn.copyButtonStyle === 'hover' ? { ...drawn, copyButtonStyle: 'inline' } : drawn
   }
   const fullWidth = (text: string) => (style.reorder && hasRtl(text) ? { width: '100%' as const } : {})
@@ -631,7 +657,7 @@ export const register: Register = (on, options) => {
       landing = land
       if (land) landSetupFocus($, land)
     }
-    const base = { ...forSurface(fit(e.viewport), e.surface, await linkReach($, probes)), copyButtons: false }
+    const base = { ...forSurface(fit(e.viewport), e.surface, await linkReach($, probes, style)), copyButtons: false, pathLinks: false }
     const view: SetupView = { el: $.ui.resolve(e), base, options, at, step, current: currentOf(step), columns: e.props.bodyColumns, rows: e.props.scroll.bodyRows, pick: value => void pickInPane($, picked, at, value, currentOf) }
     return setupKeyboardPane($, view, await read($, setupFocus), picked.theme)
   })
@@ -645,17 +671,17 @@ export const register: Register = (on, options) => {
     const found = e.props.command === 'prismantis' ? findSetup(PRESET_NAMES, e.props.text) : undefined
     if (found) {
       const el = $.ui.resolve(e)
-      const base = { ...forSurface(fit(e.viewport), e.surface, await linkReach($, probes)), copyButtons: false }
+      const base = { ...forSurface(fit(e.viewport), e.surface, await linkReach($, probes, style)), copyButtons: false, pathLinks: false }
       return <el.Box flexDirection="column" rowGap={1}>{drawSetup($, el, base, options, found, columnsOf(e.viewport))}</el.Box>
     }
     const blocks = parseCached(e.props.text)
     if (blocks.length === 0) return next(e)
     const el = $.ui.resolve(e)
     const { Box } = el
+    const reach = await linkReach($, probes, style)
     const math = await mathOfBlocks($, latex, e.surface, blocks)
     const pictures = await picturesOf($, style, probes, e.surface, blocks)
     const open = await read($, unfolded)
-    const reach = await linkReach($, probes)
     const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     return <Box flexDirection="column" rowGap={1} {...fullWidth(e.props.text)}>{drawMarkdown($, el, surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, undefined, open, { id: e.requestId, press: reach.marks })}</Box>
   })
@@ -676,9 +702,9 @@ export const register: Register = (on, options) => {
     const el = $.ui.resolve(e)
     const { Box, Text } = el
     const narration = style.toolStyle === 'tree-bold' && blocks.length === 1 && blocks[0]!.kind === 'paragraph'
+    const reach = await linkReach($, probes, style)
     const math = await mathOfBlocks($, latex, e.surface, blocks)
     const pictures = await picturesOf($, style, probes, e.surface, blocks)
-    const reach = await linkReach($, probes)
     const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     const open = await read($, unfolded)
     return (
@@ -698,7 +724,7 @@ export const register: Register = (on, options) => {
     if (blocks.length === 0) return next(e)
     const el = $.ui.resolve({ surface: e.surface, component: 'AssistantMessage' })
     const { Box } = el
-    const surfaceStyle = forSurface(style, e.surface, await linkReach($, probes))
+    const surfaceStyle = forSurface(style, e.surface, await linkReach($, probes, style))
     return { value: <Box flexDirection="column" rowGap={1} {...fullWidth(e.text)}>{drawMarkdown($, el, { ...surfaceStyle, copyButtons: false }, blocks, Math.max(20, e.columns || 0))}</Box> }
   })
 }

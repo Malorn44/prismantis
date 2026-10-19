@@ -106,43 +106,123 @@ export const takesEditorLinks = releaseFrom(EDITOR_LINKS_FROM)
 
 export const takesClickableMarks = releaseFrom(CLICKABLE_MARKS_FROM)
 
-const isHyperlink = (href: string, http: boolean, editor: boolean): boolean =>
-  (http ? /^https?:/i : /^(https:|http:\/\/localhost(:\d+)?([/?#]|$))/i).test(href) || (editor && /^vscode(-insiders)?:\/\/file\//i.test(href))
+export const fileRoot = (distro?: string): string => (distro ? `file://wsl.localhost/${encodeURIComponent(distro)}` : 'file://')
+
+export type TerminalEnv = Partial<Record<'FORCE_HYPERLINK' | 'TERM_PROGRAM' | 'TERM_PROGRAM_VERSION' | 'TERM' | 'WT_SESSION' | 'LC_TERMINAL' | 'VTE_VERSION' | 'TERMINAL_EMULATOR', string>>
+
+const HYPERLINK_TERMINALS = ['ghostty', 'Hyper', 'kitty', 'alacritty', 'iTerm.app', 'iTerm2', 'WarpTerminal']
+
+const versionOf = (value = ''): number[] => {
+  const short = /^(\d{1,2})(\d{2})$/.exec(value)
+  return short ? [0, Number(short[1])] : value.split('.').map(n => Number.parseInt(n, 10))
+}
+
+const atLeast = (value: string | undefined, major: number, minor: number): boolean => {
+  const [a = Number.NaN, b = Number.NaN] = versionOf(value)
+  return a > major || (a === major && b >= minor)
+}
+
+const programLinks = (program: string, version: string | undefined): boolean =>
+  HYPERLINK_TERMINALS.includes(program)
+  || (program === 'WezTerm' && atLeast(version, 20200620, 0))
+  || (program === 'vscode' && atLeast(version, 1, 72))
+  || (program === 'tmux' && atLeast(version, 3, 4))
+
+export const drawsHyperlinks = (env: TerminalEnv): boolean => {
+  if (env.FORCE_HYPERLINK) return Number.parseInt(env.FORCE_HYPERLINK, 10) !== 0
+  const term = env.TERM ?? ''
+  const vte = env.VTE_VERSION
+  return env.WT_SESSION !== undefined
+    || programLinks(env.TERM_PROGRAM ?? '', env.TERM_PROGRAM_VERSION)
+    || HYPERLINK_TERMINALS.includes(env.LC_TERMINAL ?? '')
+    || (vte !== undefined && vte !== '0.50.0' && atLeast(vte, 0, 50))
+    || term === 'alacritty' || term.includes('kitty')
+    || env.TERMINAL_EMULATOR === 'JetBrains-JediTerm'
+}
+
+type Reach = Pick<Style, 'httpLinks' | 'editorLinks' | 'fileLinks' | 'pathLinks' | 'cwd' | 'home'>
+
+const isHyperlink = (href: string, reach: Reach): boolean =>
+  (reach.httpLinks ? /^https?:/i : /^(https:|http:\/\/localhost(:\d+)?([/?#]|$))/i).test(href)
+  || (reach.editorLinks && /^vscode(-insiders)?:\/\/file\//i.test(href))
+  || (reach.fileLinks !== null && /^file:/i.test(href))
 
 const plainLink = (text: string, href: string): string => {
   const target = href.replace(/^mailto:/i, '')
   return text === target || `http://${text}` === target ? target : `${text} (${target})`
 }
 
-const unlink = (nodes: Inline[], http: boolean, editor: boolean): Inline[] =>
+const LINK_MAX = 2048
+
+const utf8Bytes = (cp: number): number => (cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4)
+
+const encodedLength = (href: string): number =>
+  [...href].reduce((length, ch) => {
+    const cp = ch.codePointAt(0)!
+    return length + (cp > 0x20 && cp < 0x7f ? 1 : 3 * utf8Bytes(cp))
+  }, 0)
+
+const fileHref = (root: string, href: string): string => {
+  const local = /^file:(?:\/\/(?:localhost)?)?(\/(?![a-z]:|\/)[^?#]*)(.*)$/i.exec(href)
+  return local && root !== 'file://' ? `${root}${local[1]}${local[2]}` : href
+}
+
+const pathHref = (reach: Reach, path: string): string | undefined => {
+  const base = path.startsWith('~') ? reach.home : path.startsWith('.') ? reach.cwd : '/'
+  if (!base || reach.fileLinks === null) return undefined
+  const parts: string[] = []
+  for (const part of `${slashes(base)}/${path.replace(/^~/, '').replace(/(?<=[^/.])\.+$/, '')}`.split('/')) {
+    if (part === '..') parts.pop()
+    else if (part !== '.' && part !== '') parts.push(part)
+  }
+  const target = `/${parts.join('/')}${path.endsWith('/') ? '/' : ''}`
+  const href = `${reach.fileLinks}${encodeURI(target).replace(/[?#]/g, encodeURIComponent)}`
+  return href.length <= LINK_MAX ? href : undefined
+}
+
+const drawnLink = (n: Extract<Inline, { kind: 'link' }>, reach: Reach): Inline => {
+  const href = reach.fileLinks !== null && /^file:/i.test(n.href) ? fileHref(reach.fileLinks, n.href) : n.href
+  if (!isHyperlink(n.href, reach) || encodedLength(href) > LINK_MAX) return { kind: 'text', text: plainLink(n.text, n.href) }
+  return href === n.href ? n : { ...n, href }
+}
+
+const drawnPath = (n: Extract<Inline, { kind: 'path' }>, reach: Reach): Inline => {
+  const href = reach.pathLinks ? pathHref(reach, n.text) : undefined
+  return href === undefined ? n : { ...n, href }
+}
+
+const hyperlinks = (nodes: Inline[], reach: Reach): Inline[] =>
   nodes.map(node => {
     const n: Inline = node.kind === 'image' && isWebLink(node.src) ? { kind: 'link', text: node.text, href: node.src } : node
-    return n.kind === 'link' && !isHyperlink(n.href, http, editor) ? { kind: 'text', text: plainLink(n.text, n.href) } : 'children' in n ? { ...n, children: unlink(n.children, http, editor) } : n
+    if (n.kind === 'link') return drawnLink(n, reach)
+    if (n.kind === 'path') return drawnPath(n, reach)
+    return 'children' in n ? { ...n, children: hyperlinks(n.children, reach) } : n
   })
 
-const unlinkBlock = (block: Block, http: boolean, editor: boolean): Block => {
-  const plain = (nodes: Inline[]) => unlink(nodes, http, editor)
+const hyperlinkBlock = (block: Block, reach: Reach): Block => {
+  const drawn = (nodes: Inline[]) => hyperlinks(nodes, reach)
   switch (block.kind) {
     case 'heading':
     case 'paragraph':
-      return { ...block, inline: plain(block.inline) }
+      return { ...block, inline: drawn(block.inline) }
     case 'list':
-      return { ...block, items: block.items.map(item => ({ ...item, inline: plain(item.inline) })) }
+      return { ...block, items: block.items.map(item => ({ ...item, inline: drawn(item.inline) })) }
     case 'table':
-      return { ...block, header: block.header.map(plain), rows: block.rows.map(r => r.map(plain)) }
+      return { ...block, header: block.header.map(drawn), rows: block.rows.map(r => r.map(drawn)) }
     case 'notes':
-      return { ...block, notes: block.notes.map(note => ({ ...note, inline: plain(note.inline) })) }
+      return { ...block, notes: block.notes.map(note => ({ ...note, inline: drawn(note.inline) })) }
     default:
       return block
   }
 }
 
-const unlinked = new WeakMap<Block, Block[]>()
+const hyperlinked = new WeakMap<Block, Record<string, Block>>()
 
-const drawable = (block: Block, http: boolean, editor: boolean): Block => {
-  const cached = unlinked.get(block) ?? []
-  unlinked.set(block, cached)
-  return (cached[+http + 2 * +editor] ??= unlinkBlock(block, http, editor))
+const drawable = (block: Block, reach: Reach): Block => {
+  const cached = hyperlinked.get(block) ?? {}
+  hyperlinked.set(block, cached)
+  const key = `${+reach.httpLinks}${+reach.editorLinks}${reach.fileLinks ?? ''}${reach.pathLinks ? `\0${reach.home}\0${reach.cwd}` : ''}`
+  return (cached[key] ??= hyperlinkBlock(block, reach))
 }
 
 const mostLines = (text: string, w: number): number => (text.match(/\S+/g)?.length ?? 0) + Math.ceil(width(text) / w)
@@ -222,7 +302,7 @@ const renderInline = (el: ElementTable, style: Style, nodes: Inline[], keyBase: 
       case 'number':
         return <Text key={key} color={t.number}>{n.text}</Text>
       case 'path':
-        return <Text key={key} color={t.path}>{n.text}</Text>
+        return <Text key={key} color={t.path}>{n.href === undefined ? n.text : <el.Link href={n.href} label={n.text} />}</Text>
       case 'dim':
         return n === ROW_MARK ? <Text key={key} color={t.rule}>{n.text}</Text> : <Text key={key} dimColor>{n.text}</Text>
       case 'footnote':
@@ -825,7 +905,7 @@ export const renderBlocks = (el: ElementTable, style: Style, blocks: Block[], co
     minWidth: reserved(parts),
     element: <Box position="absolute" {...(low ? { bottom: 0 } : { top: 0 })} {...(start ? { left: 0 } : { right: 0 })} display="none" hover={{ display: 'flex' }}>{button}</Box>,
   } : null)
-  const shown = blocks.map(block => drawable(block, style.httpLinks, style.editorLinks))
+  const shown = blocks.map(block => drawable(block, style))
   const rtlTables = shown.map(block => style.reorder && block.kind === 'table' && isRtlTable(style, block))
   const buttons = blocks.map((block, b) => {
     const text = hover && holdsOnlyEmptyCode(block) ? undefined : copySource(style, block)

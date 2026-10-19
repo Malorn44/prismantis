@@ -57,6 +57,8 @@ const flatten = (nodes: Inline[], wrap: Fmt['wrap'] = []): Unit[] =>
           : [...units(n.text, { wrap, leaf: 'link', href: n.href }), ...units(` (${n.href})`, { wrap, leaf: 'dim' })]
       case 'image':
         return units(n.text, { wrap, leaf: 'text' })
+      case 'path':
+        return units(n.text, { wrap, leaf: 'path', href: n.href })
       default:
         return units(n.text, { wrap, leaf: n.kind })
     }
@@ -64,7 +66,8 @@ const flatten = (nodes: Inline[], wrap: Fmt['wrap'] = []): Unit[] =>
 
 const sameFmt = (a: Fmt, b: Fmt) => a.leaf === b.leaf && a.href === b.href && a.wrap.length === b.wrap.length && a.wrap.every((k, i) => k === b.wrap[i])
 
-const leafNode = ({ leaf, href }: Fmt, text: string): Inline => (leaf === 'link' ? { kind: 'link', text, href: href! } : { kind: leaf, text })
+const leafNode = ({ leaf, href }: Fmt, text: string): Inline =>
+  leaf === 'link' ? { kind: 'link', text, href: href! } : leaf === 'path' && href ? { kind: 'path', text, href } : { kind: leaf, text }
 
 const rebuild = (all: Unit[]): Inline[] => {
   const out: Inline[] = []

@@ -8,7 +8,7 @@ export type Inline =
   | { kind: 'link'; text: string; href: string }
   | { kind: 'image'; text: string; src: string }
   | { kind: 'number'; text: string }
-  | { kind: 'path'; text: string }
+  | { kind: 'path'; text: string; href?: string }
   | { kind: 'dim'; text: string }
   | { kind: 'footnote'; text: string; note?: number }
 
