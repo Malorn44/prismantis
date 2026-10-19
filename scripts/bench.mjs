@@ -3,7 +3,7 @@ import { cpus } from 'node:os'
 import { join } from 'node:path'
 import { ROOT, load } from './load.mjs'
 
-const { parse, mermaidText, boxArt, resolveStyle, el, reply } = await load()
+const { parse, mermaidText, boxArt, resolveStyle, el, reply, renderDiffCard } = await load()
 const demo = readFileSync(join(ROOT, 'docs/demo.md'), 'utf8')
 const style = resolveStyle({ theme: 'dracula', rtl: 'warp' })
 const columns = 200
@@ -62,6 +62,8 @@ const nodeRows = [
   ["nodes: 300 Hebrew paragraphs", hebrew(300)],
   ["nodes: demo reply", demo],
 ].map(([stage, text]) => ({ stage, nodes: count(reply(text, style)) }))
+const editLines = Array.from({ length: 400 }, (_, i) => `+const v${i} = await fetch("/api/${i}", { retries: ${i % 5} })`)
+nodeRows.push({ stage: 'nodes: opened 400-line diff card', nodes: count(renderDiffCard(el, style, { filePath: '/repo/app.ts', structuredPatch: [{ oldStart: 1, newStart: 1, lines: editLines }] }, () => ({ folded: false, element: null }), 'bench')) })
 
 const rows = [
   time('parse, demo (cold)', i => parse(fresh(demo, i), { numbers: true, paths: true })),

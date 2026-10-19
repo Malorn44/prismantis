@@ -13,5 +13,6 @@
   "nodes: 300 table rows": 10533,
   "nodes: 300 paragraphs": 6600,
   "nodes: 300 Hebrew paragraphs": 6300,
-  "nodes: demo reply": 1420
+  "nodes: demo reply": 1420,
+  "nodes: opened 400-line diff card": 7810
 }
