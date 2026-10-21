@@ -1843,7 +1843,7 @@ const previewText = (el: ElementTable, style: Style, path: string, shown: string
 const wholeHead = (el: ElementTable, style: Style, file: WholeFile, band?: string): RenderElement => (
   <el.Text key="head">
     {band ? <el.Text {...onBand(style.theme.codeText, band)}>{'Created '}</el.Text> : file.kind === 'created' ? 'Created ' : 'Deleted '}
-    <el.Text color={style.theme.path} {...lift(style.theme.path, band)}>{shortPath(style, file.path)}</el.Text>
+    <el.Text color={style.theme.path} {...lift(style.theme.path, band)}>{drawPieces(el, style, [{ text: shortPath(style, file.path), path: file.kind === 'created' ? file.path : undefined }])}</el.Text>
     <el.Text dimColor {...muted(style, band)}>{` (${lineCount(file.lines.length)})`}</el.Text>
   </el.Text>
 )
@@ -1897,7 +1897,7 @@ const renamedLine = (el: ElementTable, style: Style, from: string, to: string, k
     {'Renamed '}
     <el.Text color={style.theme.path}>{shortPath(style, from)}</el.Text>
     {' → '}
-    <el.Text color={style.theme.path}>{shortPath(style, to)}</el.Text>
+    <el.Text color={style.theme.path}>{drawPieces(el, style, [{ text: shortPath(style, to), path: to }])}</el.Text>
   </el.Text>
 )
 

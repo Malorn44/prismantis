@@ -402,6 +402,7 @@ test('the help screen shows every element prismantis draws', async () => {
   expect(showcaseText([])).toContain('A file an Edit or a shell command creates shows its first 10 lines as added lines under `Created`')
   expect(showcaseText([])).toContain('one `Deleted` line that opens to its removed lines on a click')
   expect(showcaseText([])).toContain('one `Renamed old → new` line')
+  expect(showcaseText([])).toContain('the file a `Created` header names and the new name in `Renamed` open on click, while a `Deleted` file and the old name stay text')
   expect(showcaseText([])).not.toContain('diffAddedColor')
 })
 
@@ -1120,6 +1121,55 @@ test('shell edit cards link their file headers', async ($, on) => {
   const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolResult', props: { tool_use_id: 'be-1', tool: 'Bash', output, isErrored: false } }))
   expect(await linkPairs(ui)).toEqual([['src/app.ts', 'file:///work/app/src/app.ts']])
   expect((await ui.find({ type: 'Text', text: /^src\/app\.ts $/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+  await ui.unmount()
+})
+
+const shellFiles = (...files: unknown[]) => ({ stdout: '', stderr: '', interrupted: false, bashEditDiff: { files, moreFiles: 0 } })
+const madeFile = (path: string, body: string[]) => ({ filePath: path, hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: body.length, lines: body.map(l => `+${l}`) }], created: true as const })
+const removedFile = (path: string, body: string[]) => ({ filePath: path, hunks: [{ oldStart: 1, oldLines: body.length, newStart: 0, newLines: 0, lines: body.map(l => `-${l}`) }], deleted: true as const })
+const toolResult = (surface: 'terminal' | 'desktop', tool: string, output: unknown, id: string) => ({ plugin: 'prismantis', surface, component: 'ToolResult' as const, props: { tool_use_id: id, tool, output, isErrored: false } })
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  for (const base of ['2.1.289', '2.1.295']) {
+    test(`shell edit cards link a created file and a renamed file's new name, never a deleted file or an old name, on ${surface} at ${base}`, async ($, on) => {
+      const disk = filesAt(on, base, {}, { '/work/app/old.txt': null, '/work/app/a.txt': null })
+      if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+      const output = shellFiles(madeFile('/work/app/src/new.ts', ['one']), removedFile('/work/app/old.txt', ['gone']), removedFile('/work/app/a.txt', ['same', 'lines']), madeFile('/work/app/b.txt', ['same', 'lines']))
+      const ui = await disk.drawn($.ui.mount(toolResult(surface, 'Bash', output, `heads-${base}`)))
+      expect(await linkPairs(ui)).toEqual(surface === 'terminal' ? [['src/new.ts', 'file:///work/app/src/new.ts'], ['b.txt', 'file:///work/app/b.txt']] : [])
+      expect(disk.stats).toEqual(surface === 'terminal' ? ['/work/app/src/new.ts', '/work/app/b.txt'] : [])
+      for (const text of [/^old\.txt$/, /^a\.txt$/]) expect((await ui.find({ type: 'Text', text }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+      expect(await ui.find({ type: 'Text', text: /^Renamed a\.txt → b\.txt$/ })).toBeDefined()
+      await ui.unmount()
+    })
+  }
+
+  test(`a Write's Created header and an Edit that makes a file link their file, on ${surface}`, async ($, on) => {
+    const disk = filesAt(on, '2.1.295')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const write = { type: 'create', filePath: '/work/app/notes/new.md', content: 'one\ntwo\n', structuredPatch: [], originalFile: null }
+    const written = await disk.drawn($.ui.mount(toolResult(surface, 'Write', write, 'made-write')))
+    expect(await linkPairs(written)).toEqual(surface === 'terminal' ? [['notes/new.md', 'file:///work/app/notes/new.md']] : [])
+    expect(await written.find({ type: 'Text', text: /^Created notes\/new\.md \(2 lines\)$/ })).toBeDefined()
+    await written.unmount()
+    const edit = { filePath: '/work/app/made.ts', oldString: '', newString: 'one\n', originalFile: '', userModified: false, replaceAll: false, structuredPatch: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+one'] }] }
+    const edited = await disk.drawn($.ui.mount(toolResult(surface, 'Edit', edit, 'made-edit')))
+    expect(await linkPairs(edited)).toEqual(surface === 'terminal' ? [['made.ts', 'file:///work/app/made.ts']] : [])
+    await edited.unmount()
+  })
+}
+
+test('a Created header waits for its file, and a Deleted header is never looked up', async ($, on) => {
+  const disk = filesAt(on, '2.1.295', {}, { '/work/app/late.md': null })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const output = shellFiles(madeFile('/work/app/late.md', ['one']), removedFile('/work/app/gone.md', ['two']))
+  const ui = await disk.drawn($.ui.mount(toolResult('terminal', 'Bash', output, 'late-1')))
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+  disk.files['/work/app/late.md'] = {}
+  await ui.redraw()
+  await disk.clock.advance(1000)
+  expect(await linkPairs(ui)).toEqual([['late.md', 'file:///work/app/late.md']])
+  expect(disk.stats).toEqual(['/work/app/late.md', '/work/app/late.md'])
   await ui.unmount()
 })
 

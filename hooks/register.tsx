@@ -320,11 +320,12 @@ const withFiles = async <T,>($: EngineInterface, checks: FileChecks, base: Style
   return drawn
 }
 
-const fileCard = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, output: unknown, id: string, style: Style, probes: Probes, drawn: () => Style, columns?: number): Promise<RenderElement | undefined> => {
+const fileCard = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, output: unknown, id: string, style: Style, probes: Probes, checks: FileChecks, drawn: () => Style, columns?: number): Promise<RenderElement | undefined> => {
   const press = (await linkReach($, probes, style)).marks
   if (leftToEngine(output, press)) return undefined
   await locate($, style)
-  return renderDiffCard(el, drawn(), output, folder($, el, await read($, unfolded), press), id, columns)
+  const fold = folder($, el, await read($, unfolded), press)
+  return withFiles($, checks, drawn(), linked => renderDiffCard(el, linked, output, fold, id, columns))
 }
 
 const probe = async ($: EngineInterface, style: Style, probes: Probes): Promise<Terminal | null> => {
@@ -651,8 +652,9 @@ export const register: Register = (on, options) => {
       return shell && typeof e.props.output !== 'string' ? renderExpandedShell($.ui.resolve(e), fit(e.viewport), e.props) : next(e)
     })
     on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-      const cards = (): Style => ({ ...fit(e.viewport), pressPreview: e.surface === 'terminal' })
-      if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) return (await fileCard($, $.ui.resolve(e), e.props.output, e.props.tool_use_id, style, probes, cards, e.viewport?.columns)) ?? next(e)
+      const reach = await linkReach($, probes, style)
+      const cards = (): Style => ({ ...forSurface(fit(e.viewport), e.surface, reach), pressPreview: e.surface === 'terminal' })
+      if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) return (await fileCard($, $.ui.resolve(e), e.props.output, e.props.tool_use_id, style, probes, checks, cards, e.viewport?.columns)) ?? next(e)
       const edits = e.props.tool === 'Bash' && !e.props.isErrored ? bashEdits(e.props.output) : undefined
       if (edits) {
         await locate($, style)
@@ -661,8 +663,8 @@ export const register: Register = (on, options) => {
         const above = !hasShellOutput(output) ? null : quiet ? renderShellResult(el, fit(e.viewport), output) : await next({ ...e, props: { ...e.props, output } })
         firstEdit ??= e.props.tool_use_id
         const notes = editNotes(edits, firstEdit === e.props.tool_use_id, shellCommands.get(e.props.tool_use_id))
-        const fold = folder($, el, await read($, unfolded), (await linkReach($, probes, style)).marks)
-        const drawn = await withFiles($, checks, forSurface(cards(), e.surface, await linkReach($, probes, style)), linked => renderBashEdits(el, linked, edits, fold, e.props.tool_use_id, above !== null, notes, e.viewport?.columns))
+        const fold = folder($, el, await read($, unfolded), reach.marks)
+        const drawn = await withFiles($, checks, cards(), linked => renderBashEdits(el, linked, edits, fold, e.props.tool_use_id, above !== null, notes, e.viewport?.columns))
         return above === null ? drawn : <el.Box flexDirection="column">{above}{drawn}</el.Box>
       }
       if (!quiet) return next(e)
