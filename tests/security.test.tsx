@@ -1,3 +1,5 @@
+import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { ClipboardBackend } from '../hooks/clipboard'
@@ -6,7 +8,7 @@ import { tableHtml } from '../hooks/html'
 import { mathOf } from '../hooks/latex'
 import type { Block } from '../hooks/markdown'
 import { parse } from '../hooks/markdown'
-import { claudeAt, linksHttp } from './claude-version'
+import { linksHttp } from './claude-version'
 
 const HOSTILE = [
   `'; do shell script "rm -rf ~" --`,
@@ -83,21 +85,33 @@ test('only web links in a reply are clickable, in every block, while file links 
   expect(hrefs.filter(h => h !== 'https://a.dev')).toEqual([])
 })
 
+const fileLinksWhereTaken = async ($: Engine, on: On): Promise<boolean> => {
+  let probing = true
+  let base = '2.1.288'
+  on('session.version', () => ({ value: { version: base, base } }))
+  on('ui.render', ($, e) => {
+    const { Link, Text } = $.ui.resolve(e)
+    return probing ? <Link href="file:///probe" /> : <Text>engine</Text>
+  })
+  const taken = await linksHttp($.ui.mount(reply('')))
+  probing = false
+  base = taken ? '2.1.289' : '2.1.288'
+  return taken
+}
+
 test('with file links on, only web links and file links labelled with their own address are clickable, as written, in every block', async ($, on) => {
-  claudeAt(on, '2.1.289')
   mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me' })
-  if (!(await linksHttp($.ui.mount(reply('[/x](file:///x)'))))) return
+  const fileLinks = await fileLinksWhereTaken($, on)
   const ui = await $.ui.mount(reply(everyBlock(targetLinks)))
   const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
-  const allowed = TARGETS.filter(([, linked]) => linked).map(([href]) => href)
+  const allowed = TARGETS.filter(([href, linked]) => (fileLinks ? linked : href.startsWith('https:'))).map(([href]) => href)
   expect(hrefs).toEqual(Array.from({ length: 6 }, () => allowed).flat())
   await ui.unmount()
 })
 
 test('with file links on, a file link named anything but its own path draws as text with its target, in every block', async ($, on) => {
-  claudeAt(on, '2.1.289')
   mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me' })
-  if (!(await linksHttp($.ui.mount(reply('[/x](file:///x)'))))) return
+  await fileLinksWhereTaken($, on)
   const ui = await $.ui.mount(reply(everyBlock(TARGETS.map(([href], i) => `[t${i}](${href})`).join(' '))))
   const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
   expect(hrefs).toEqual(Array.from({ length: 6 }, () => 'https://a.dev'))
@@ -116,9 +130,8 @@ const REMOTE: [label: string, href: string][] = [
 
 for (const [where, env] of [['outside WSL', {}], ['under WSL', { WSL_DISTRO_NAME: 'Ubuntu' }]] as const) {
   test(`with file links on, a file link that names another computer draws as text with its target, whatever its label, in every block, ${where}`, async ($, on) => {
-    claudeAt(on, '2.1.289')
     mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me', ...env })
-    if (!(await linksHttp($.ui.mount(reply('[/x](file:///x)'))))) return
+    await fileLinksWhereTaken($, on)
     const ui = await $.ui.mount(reply(everyBlock(['[ok](https://a.dev)', ...REMOTE.map(([label, href]) => `[${label}](${href})`)].join(' '))))
     expect((await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))).toEqual(Array.from({ length: 6 }, () => 'https://a.dev'))
     for (const [label, href] of REMOTE) {
