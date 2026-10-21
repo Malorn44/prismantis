@@ -163,10 +163,15 @@ const launches = (href: string): boolean => {
   return /\.app[/\\]/.test(path) || name.split(/[:\u0000-\u001f]/).some(part => LAUNCHERS.has(extensionOf(part)))
 }
 
+const localFile = (href: string): boolean => {
+  const path = /^file:(?:\/\/(?:localhost)?)?(\/.*)$/i.exec(href)?.[1]
+  return path !== undefined && !/^\/[/\\]|\\/.test(unescaped(path))
+}
+
 const isHyperlink = (href: string, reach: Reach): boolean =>
   (reach.httpLinks ? /^https?:/i : /^(https:|http:\/\/localhost(:\d+)?([/?#]|$))/i).test(href)
   || (reach.editorLinks && /^vscode(-insiders)?:\/\/file\//i.test(href))
-  || (reach.fileLinks !== null && /^file:/i.test(href) && !launches(href))
+  || (reach.fileLinks !== null && localFile(href) && !launches(href))
 
 const plainLink = (text: string, href: string): string => {
   const target = href.replace(/^mailto:/i, '')
@@ -210,9 +215,7 @@ const toolHref = (reach: Reach, path: string): string | undefined => {
   if (!reach.pathLinks || reach.fileLinks === null) return undefined
   const forward = path.replace(/\\/g, '/')
   if (/^[a-z]:\//i.test(forward)) return pathHref({ ...reach, fileLinks: 'file://' }, forward)
-  if (!forward.startsWith('//')) return pathHref(reach, /^[/~.]/.test(forward) ? forward : `./${forward}`)
-  const href = `file:${encodeURI(forward).replace(/[?#]/g, encodeURIComponent)}`
-  return href.length <= LINK_MAX && !launches(href) ? href : undefined
+  return forward.startsWith('//') ? undefined : pathHref(reach, /^[/~.]/.test(forward) ? forward : `./${forward}`)
 }
 
 type LinkPiece = { text: string; path?: string }

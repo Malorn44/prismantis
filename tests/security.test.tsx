@@ -59,7 +59,14 @@ const TARGETS: [href: string, linkedWithFileLinks: boolean][] = [
   ['file:///Applications/Calculator.app', false],
   ['FILE:///C:/Windows/System32/cmd.exe', false],
   ['file://evil.example/share/x.exe', false],
+  ['file://evil.example/share/x.txt', false],
+  ['file:////evil.example/share/x.txt', false],
+  ['file:/\\evil.example/share/x.txt', false],
+  ['file:///\\evil.example/share/x.txt', false],
+  ['file:/%2F%2Fevil.example/share/x.txt', false],
+  ['file://localhost/%5C%5Cevil.example/share/x.txt', false],
   ['file:///tmp/notes.md', true],
+  ['file://localhost/tmp/notes.md', true],
   ['smb://host/share', false],
   ['ms-msdt:/id', false],
   ['javascript:alert(1)', false],
@@ -97,3 +104,27 @@ test('with file links on, a file link named anything but its own path draws as t
   expect(await ui.find({ type: 'Text', text: /^t1 \(file:\/\/\/Applications\/Calculator\.app\)$/ })).toBeDefined()
   await ui.unmount()
 })
+
+const REMOTE: [label: string, href: string][] = [
+  ['\\\\evil.example\\share\\x.txt', 'file://evil.example/share/x.txt'],
+  ['\\\\evil.example\\share\\x.txt', 'file:////evil.example/share/x.txt'],
+  ['file://evil.example/share/x.txt', 'file://evil.example/share/x.txt'],
+  ['FILE://EVIL.EXAMPLE/share/x.txt', 'FILE://EVIL.EXAMPLE/share/x.txt'],
+  ['//evil.example/share/x.txt', 'file://evil.example/share/x.txt'],
+  ['\\\\127.0.0.1\\c$\\x.txt', 'file://127.0.0.1/c$/x.txt'],
+]
+
+for (const [where, env] of [['outside WSL', {}], ['under WSL', { WSL_DISTRO_NAME: 'Ubuntu' }]] as const) {
+  test(`with file links on, a file link that names another computer draws as text with its target, whatever its label, in every block, ${where}`, async ($, on) => {
+    claudeAt(on, '2.1.289')
+    mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me', ...env })
+    if (!(await linksHttp($.ui.mount(reply('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount(reply(everyBlock(['[ok](https://a.dev)', ...REMOTE.map(([label, href]) => `[${label}](${href})`)].join(' '))))
+    expect((await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))).toEqual(Array.from({ length: 6 }, () => 'https://a.dev'))
+    for (const [label, href] of REMOTE) {
+      const text = label === href ? href : `${label} (${href})`
+      expect([text, (await ui.findAll({ type: 'Text', text: new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) })).length >= 6]).toEqual([text, true])
+    }
+    await ui.unmount()
+  })
+}

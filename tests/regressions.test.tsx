@@ -696,7 +696,8 @@ for (const [where, env, root] of [
     filesAt(on, '2.1.289', env)
     if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
     const ui = await $.ui.mount(mount('[/home/me/notes.md](file:///home/me/notes.md) [/srv/x.log](file://localhost/srv/x.log) [C:\\Users\\me\\x.txt](file:///C:/Users/me/x.txt) [\\\\server\\share\\x.txt](file://server/share/x.txt)'))
-    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual([`${root}/home/me/notes.md`, root === 'file://' ? 'file://localhost/srv/x.log' : `${root}/srv/x.log`, 'file:///C:/Users/me/x.txt', 'file://server/share/x.txt'])
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual([`${root}/home/me/notes.md`, root === 'file://' ? 'file://localhost/srv/x.log' : `${root}/srv/x.log`, 'file:///C:/Users/me/x.txt'])
+    expect(await ui.find({ type: 'Text', text: /^\\\\server\\share\\x\.txt \(file:\/\/server\/share\/x\.txt\)$/ })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: /^\/home\/me\/notes\.md$/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].link)
     await ui.unmount()
   })
@@ -714,7 +715,9 @@ const LABELS: [label: string, href: string, linked: boolean][] = [
   ['/home/me/', 'file:///home/me', true],
   ['/tmp/a.html', 'file:///tmp/a.html#s', true],
   ['C:\\Users\\me\\x.txt', 'file:///C:/Users/me/x.txt', true],
-  ['\\\\server\\share\\x.txt', 'file://server/share/x.txt', true],
+  ['\\\\server\\share\\x.txt', 'file://server/share/x.txt', false],
+  ['\\\\server\\share\\x.txt', 'file:////server/share/x.txt', false],
+  ['//server/share/x.txt', 'file://server/share/x.txt', false],
   ['notes', 'file:///tmp/notes.md', false],
   ['notes.md', 'file:///tmp/notes.md', false],
   ['the docs', 'file:///tmp/setup.command', false],
@@ -950,13 +953,14 @@ test('the link check reads the environment once, however many replies draw', asy
   for (const name of ['FORCE_HYPERLINK', 'TERM_PROGRAM_VERSION', 'LC_TERMINAL', 'TERMINAL_EMULATOR', 'WSL_DISTRO_NAME', 'SSH_TTY']) expect([name, reads.filter(n => n === name).length]).toEqual([name, 1])
 })
 
-test('under WSL, file:// links with a query, a fragment or one slash go through wsl.localhost too', async ($, on) => {
+test('under WSL, file:// links with a query, a fragment or one slash go through wsl.localhost too, and a server link stays text', async ($, on) => {
   filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
   const ui = await $.ui.mount(mount('[/tmp/a.html](file:///tmp/a.html#s) [/tmp/b.txt](file:/tmp/b.txt) [/tmp/c](file:///tmp/c?x=1) [\\\\server\\share\\d](file:////server/share/d)'))
   expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual([
-    'file://wsl.localhost/Ubuntu/tmp/a.html#s', 'file://wsl.localhost/Ubuntu/tmp/b.txt', 'file://wsl.localhost/Ubuntu/tmp/c?x=1', 'file:////server/share/d',
+    'file://wsl.localhost/Ubuntu/tmp/a.html#s', 'file://wsl.localhost/Ubuntu/tmp/b.txt', 'file://wsl.localhost/Ubuntu/tmp/c?x=1',
   ])
+  expect(await ui.find({ type: 'Text', text: /^\\\\server\\share\\d \(file:\/\/\/\/server\/share\/d\)$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -1029,12 +1033,14 @@ for (const toolOutput of ['full', 'quiet'] as const) {
   })
 }
 
-test('Windows paths in tool rows link with forward slashes, and UNC paths name their server', async ($, on) => {
+test('Windows paths in tool rows link with forward slashes, and UNC paths stay text', async ($, on) => {
   filesAt(on, '2.1.289')
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
   expect(await toolLinks($, 'Grep', { pattern: 'x', path: 'src\\hooks' })).toEqual([['src\\hooks', 'file:///work/app/src/hooks']])
   expect(await toolLinks($, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([['C:\\Users\\me\\x.ts', 'file:///C:/Users/me/x.ts']])
-  expect(await toolLinks($, 'Read', { file_path: '\\\\server\\share\\x.txt' })).toEqual([['\\\\server\\share\\x.txt', 'file://server/share/x.txt']])
+  expect(await toolLinks($, 'Read', { file_path: '\\\\server\\share\\x.txt' })).toEqual([])
+  expect(await toolLinks($, 'Edit', { file_path: '//server/share/y.txt' })).toEqual([])
+  expect(await toolLinks($, 'Grep', { pattern: 'x', path: '\\\\?\\UNC\\server\\share' })).toEqual([])
 })
 
 test('under WSL a drive path in a tool row is already a Windows path, so it links without wsl.localhost', async ($, on) => {
