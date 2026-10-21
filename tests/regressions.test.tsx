@@ -371,8 +371,9 @@ test('the help screen shows every element prismantis draws', async () => {
   expect(links.some(l => l.kind === 'link' && l.href === `file://${l.text}`) && links.some(l => l.kind === 'link' && l.href.startsWith('file:///') && l.href !== `file://${l.text}`)).toBe(true)
   expect(blocks.some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text.startsWith('./')) && b.inline.some(n => n.kind === 'path' && n.text.startsWith('~/')))).toBe(true)
   expect(showcaseText([])).toContain('open on click in a terminal that draws hyperlinks')
-  expect(showcaseText([])).toContain('/tmp/app.ts open on click')
-  expect(showcaseText([])).toContain('slash commands like /config stay text')
+  expect(showcaseText([])).toContain('Paths that are there, like ~/.claude and ./README.md, open on click')
+  expect(showcaseText([])).toContain('a path to nothing yet, like ./not-here-yet.md, and slash commands like /config stay text')
+  expect(showcaseText([])).toContain('a program with no extension like /bin/sh keep the path color without a link')
   expect(showcaseText([])).toContain('the file each one read or edited opens on click')
   expect(showcaseText([])).toContain('f(*args, **kwargs)')
   expect(showcaseText([])).toContain('Programs and launchers stay plain text')
@@ -664,10 +665,49 @@ const pathColored = async (ui: { findAll: (query: { type: 'Text'; text: RegExp }
   return true
 }
 
-const filesAt = (on: On, base: string | undefined, env: Record<string, string> = {}) => {
+type OnDisk = { kind?: 'file' | 'dir' | 'other'; realPath?: string | null; size?: number; mtimeMs?: number; base64?: string }
+
+const unixPath = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+
+const onDisk = (on: On, files: Record<string, OnDisk | null>, others: OnDisk | null) => {
+  const clock = mock.clock(on)
+  const stats: string[] = []
+  const reads: string[] = []
+  const late: Record<string, number> = {}
+  const lookup = (path: string): OnDisk | null => (path in files ? (files[path] ?? null) : others)
+  on('fs.stat', async (_, e) => {
+    const path = unixPath(e.path)
+    stats.push(path)
+    const file = lookup(path)
+    const wait = late[path]
+    if (wait !== undefined) {
+      delete late[path]
+      await clock.sleep(wait)
+    }
+    if (!file) return { deny: `ENOENT: no such file or directory, stat '${path}'` }
+    return { value: { kind: file.kind ?? 'file', size: file.size ?? atob(file.base64 ?? '').length, mtimeMs: file.mtimeMs ?? 0, isLink: typeof file.realPath === 'string', ...(e.resolve && file.realPath !== null ? { realPath: file.realPath ?? path } : {}) } }
+  })
+  on('fs.read', (_, e) => {
+    const path = unixPath(e.path)
+    reads.push(path)
+    const file = lookup(path)
+    return file ? { value: { base64: file.base64 ?? '' } } : { deny: `ENOENT: no such file or directory, open '${path}'` }
+  })
+  const drawn = async <T,>(mounting: Promise<T>): Promise<T> => {
+    const ui = await mounting
+    await clock.settle()
+    return ui
+  }
+  return { clock, stats, reads, files, late, drawn }
+}
+
+type Disk = ReturnType<typeof onDisk>
+
+const filesAt = (on: On, base: string | undefined, env: Record<string, string> = {}, files: Record<string, OnDisk | null> = {}, others: OnDisk | null = {}): Disk => {
   if (base) claudeAt(on, base)
   mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me', ...env })
   on('session.root', () => ({ value: '/work/app' }))
+  return onDisk(on, files, others)
 }
 
 const withoutLinks = (node: unknown): unknown => {
@@ -683,11 +723,12 @@ for (const [where, env, root] of [
   ['under WSL', { WSL_DISTRO_NAME: 'Ubuntu' }, 'file://wsl.localhost/Ubuntu'],
 ] as const) {
   test(`paths in a paragraph, a list and a table link to their files ${where}`, async ($, on) => {
-    filesAt(on, '2.1.289', env)
+    const disk = filesAt(on, '2.1.289', env)
     if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-    const ui = await $.ui.mount(mount(PATHS))
-    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(
-      ['/srv/app/main.ts', '/home/me/notes/todo.md', '/work/app/docs/guide.md', '/home/me/notes/list.md', '/srv/data/table.csv'].map(path => `${root}${path}`))
+    const ui = await disk.drawn($.ui.mount(mount(PATHS)))
+    const files = ['/srv/app/main.ts', '/home/me/notes/todo.md', '/work/app/docs/guide.md', '/home/me/notes/list.md', '/srv/data/table.csv']
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(files.map(path => `${root}${path}`))
+    expect(disk.stats).toEqual(files)
     expect(await pathColored(ui)).toBe(true)
     await ui.unmount()
   })
@@ -753,9 +794,9 @@ for (const [where, env] of [['outside WSL', {}], ['under WSL', { WSL_DISTRO_NAME
 }
 
 test('a home folder with a space is percent-encoded in the file link', async ($, on) => {
-  filesAt(on, '2.1.289', { HOME: '/home/Mara Schwartz' })
+  const disk = filesAt(on, '2.1.289', { HOME: '/home/Mara Schwartz' })
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-  const ui = await $.ui.mount(mount('Settings live in ~/.claude/settings.json and ../shared/a+b@2.txt'))
+  const ui = await disk.drawn($.ui.mount(mount('Settings live in ~/.claude/settings.json and ../shared/a+b@2.txt')))
   expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///home/Mara%20Schwartz/.claude/settings.json', 'file:///work/shared/a+b@2.txt'])
   await ui.unmount()
 })
@@ -775,26 +816,26 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 
   test(`absolute paths with two parts link, and ./ and ~/ paths link as before, on ${surface}`, async ($, on) => {
-    filesAt(on, '2.1.289')
+    const disk = filesAt(on, '2.1.289')
     if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-    const ui = await $.ui.mount({ ...mount('Open /tmp/app.ts, /a/b, ./x or ~/x'), surface })
+    const ui = await disk.drawn($.ui.mount({ ...mount('Open /tmp/app.ts, /a/b, ./x or ~/x'), surface }))
     expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///tmp/app.ts', 'file:///a/b', 'file:///work/app/x', 'file:///home/me/x'] : [])
     await ui.unmount()
   })
 
   test(`an absolute path links only when a name follows its first slash-separated name, on ${surface}`, async ($, on) => {
-    filesAt(on, '2.1.289')
+    const disk = filesAt(on, '2.1.289')
     if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-    const ui = await $.ui.mount({ ...mount('See /tmp/ and /config. Then /config:3, /a//b, /srv/log., /srv/app.ts:12, // and / alone, /tmp/., C:\\Users\\me\\x.ts and C:/Users/me/x.ts'), surface })
+    const ui = await disk.drawn($.ui.mount({ ...mount('See /tmp/ and /config. Then /config:3, /a//b, /srv/log., /srv/app.ts:12, // and / alone, /tmp/., C:\\Users\\me\\x.ts and C:/Users/me/x.ts'), surface }))
     expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///a/b', 'file:///srv/log', 'file:///srv/app.ts'] : [])
     expect([await pathTexts(ui, /^\/tmp\/$/), await pathTexts(ui, /^\/config\.$/), await pathTexts(ui, /^\/config$/), await pathTexts(ui, /^\/tmp\/\.$/)]).toEqual([1, 1, 1, 1])
     await ui.unmount()
   })
 
   test(`a tag line stays dim and a closing tag inside a sentence stays unlinked, on ${surface}`, async ($, on) => {
-    filesAt(on, '2.1.289')
+    const disk = filesAt(on, '2.1.289')
     if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-    const ui = await $.ui.mount({ ...mount('<tldr>\n- First point, see /tmp/example.\n</tldr>\n\nClose it with </tldr> when done.'), surface })
+    const ui = await disk.drawn($.ui.mount({ ...mount('<tldr>\n- First point, see /tmp/example.\n</tldr>\n\nClose it with </tldr> when done.'), surface }))
     expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///tmp/example'] : [])
     expect(await pathTexts(ui, /^\/tldr$/)).toBe(1)
     await ui.unmount()
@@ -853,7 +894,10 @@ for (const columns of [120, 34]) {
     on('ui.render', ($, e) => {
       const el = $.ui.resolve(e)
       drawnPlain = renderBlocks(el, plain, blocks, columns)
-      drawnLinked = renderBlocks(el, { ...plain, fileLinks: 'file://', pathLinks: true }, blocks, columns)
+      const asked = new Set<string>()
+      const unchecked = renderBlocks(el, { ...plain, fileLinks: 'file://', pathLinks: true, files: { found: new Set(), asked } }, blocks, columns)
+      expect(JSON.stringify(unchecked)).toBe(JSON.stringify(drawnPlain))
+      drawnLinked = renderBlocks(el, { ...plain, fileLinks: 'file://', pathLinks: true, files: { found: asked, asked: new Set() } }, blocks, columns)
       return <el.Text>engine</el.Text>
     })
     const ui = await $.ui.mount(mount(''))
@@ -877,21 +921,22 @@ test('copy reply copies paths as written', async ($, on) => {
 })
 
 test('a path or link longer than Claude Code draws stays text, and the reply still draws', async ($, on) => {
-  filesAt(on, '2.1.289')
+  const disk = filesAt(on, '2.1.289')
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
   const long = `/${'a'.repeat(60)}`.repeat(35)
   const web = `https://example.com/${'b'.repeat(2050)}`
   const wide = `https://example.com/${'文'.repeat(700)}`
-  const ui = await $.ui.mount(mount(`see ${long} here\n\n${web}\n\n[wide](${wide}) and ~/short.md`))
+  const ui = await disk.drawn($.ui.mount(mount(`see ${long} here\n\n${web}\n\n[wide](${wide}) and ~/short.md`)))
   expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///home/me/short.md'])
+  expect(disk.stats).toEqual(['/home/me/short.md'])
   expect(await ui.find({ type: 'Text', text: /^wide \(https:\/\/example\.com\/文+\)$/ })).toBeDefined()
   await ui.unmount()
 })
 
 test('a line holding only a tag is never drawn as a path, so it never links', async ($, on) => {
-  filesAt(on, '2.1.289')
+  const disk = filesAt(on, '2.1.289')
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-  const ui = await $.ui.mount(mount('<tldr>\n- First point, see /tmp/example.\n</tldr>'))
+  const ui = await disk.drawn($.ui.mount(mount('<tldr>\n- First point, see /tmp/example.\n</tldr>')))
   expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///tmp/example'])
   expect(await ui.find({ type: 'Text', text: /^<\/tldr>$/ })).toBeDefined()
   await ui.unmount()
@@ -930,9 +975,9 @@ test('paths link in the terminals Claude Code draws hyperlinks in, and only thos
 
 for (const [version, linked] of [['1.5.0', false], ['1.95.3', true]] as const) {
   test(`a VS Code terminal at ${version} ${linked ? 'links' : 'does not link'} paths, as Claude Code decides`, async ($, on) => {
-    filesAt(on, '2.1.289', { FORCE_HYPERLINK: '', TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: version })
+    const disk = filesAt(on, '2.1.289', { FORCE_HYPERLINK: '', TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: version })
     if (linked && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-    const ui = await $.ui.mount(mount('Open ~/notes/todo.md'))
+    const ui = await disk.drawn($.ui.mount(mount('Open ~/notes/todo.md')))
     expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(linked ? ['file:///home/me/notes/todo.md'] : [])
     await ui.unmount()
   })
@@ -966,9 +1011,9 @@ test('under WSL, file:// links with a query, a fragment or one slash go through 
 
 for (const env of [{ VTE_VERSION: '7600' }, { KONSOLE_VERSION: '230804' }, { KITTY_WINDOW_ID: '1' }] as Record<string, string>[]) {
   test(`under WSL a Linux terminal (${Object.keys(env)[0]}) gets plain file:/// links it opens itself`, async ($, on) => {
-    filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu', ...env })
+    const disk = filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu', ...env })
     if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-    const ui = await $.ui.mount(mount('Open ~/notes/todo.md and [/tmp/n.md](file:///tmp/n.md)'))
+    const ui = await disk.drawn($.ui.mount(mount('Open ~/notes/todo.md and [/tmp/n.md](file:///tmp/n.md)')))
     expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///home/me/notes/todo.md', 'file:///tmp/n.md'])
     await ui.unmount()
   })
@@ -984,13 +1029,20 @@ test('/prismantis setup samples draw their made-up paths without links', async (
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`/prismantis demo links its sample paths and keeps its slash command sample as text on ${surface}`, async ($, on) => {
-    filesAt(on, '2.1.289')
+  test(`/prismantis demo links its sample paths that are there and keeps a missing one, a program and its slash command sample as text on ${surface}`, async ($, on) => {
+    const disk = filesAt(on, '2.1.289', {}, {
+      '/home/me/.claude': { kind: 'dir' },
+      '/work/app/README.md': {},
+      '/work/app/not-here-yet.md': null,
+      '/bin/sh': { realPath: '/usr/bin/dash', size: 125560 },
+    })
     if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
     const text = showcaseText(PRESET_NAMES)
-    const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'CommandOutput', props: { command: 'prismantis', args: 'demo', text, isErrored: false }, viewport: { columns: 120, rows: 40 } })
+    const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'CommandOutput', props: { command: 'prismantis', args: 'demo', text, isErrored: false }, viewport: { columns: 120, rows: 40 } }))
     const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
-    expect([hrefs.includes('file:///tmp/app.ts'), hrefs.some(href => href.endsWith('/config'))]).toEqual([surface === 'terminal', false])
+    expect(['file:///home/me/.claude', 'file:///work/app/README.md'].map(href => hrefs.includes(href))).toEqual([surface === 'terminal', surface === 'terminal'])
+    expect(hrefs.filter(href => /not-here-yet|\/bin\/sh|\/config$/.test(href))).toEqual([])
+    expect([await pathTexts(ui, /^\.\/not-here-yet\.md$/), await pathTexts(ui, /^\/bin\/sh$/)]).toEqual([1, 1])
     expect(parse(text, hl).some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text === '/config'))).toBe(true)
     await ui.unmount()
   })
@@ -1001,8 +1053,8 @@ const toolCall = (tool: string, input: unknown, id: string) => ({ tool_use_id: i
 const linkPairs = async (ui: { findAll: (query: { type: 'Link' }) => Promise<{ props: { label?: unknown; href?: unknown } }[]> }) =>
   (await ui.findAll({ type: 'Link' })).map(l => [l.props.label, l.props.href])
 
-const toolLinks = async ($: Engine, tool: string, input: unknown) => {
-  const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolUse', props: toolCall(tool, input, `t-${tool}`) })
+const toolLinks = async ($: Engine, disk: Disk, tool: string, input: unknown) => {
+  const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolUse', props: toolCall(tool, input, `t-${tool}`) }))
   const links = await linkPairs(ui)
   await ui.unmount()
   return links
@@ -1010,23 +1062,24 @@ const toolLinks = async ($: Engine, tool: string, input: unknown) => {
 
 for (const toolOutput of ['full', 'quiet'] as const) {
   test(`file paths in tool rows link to the whole file (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
-    filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
+    const disk = filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
     if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
     const root = 'file://wsl.localhost/Ubuntu'
-    expect(await toolLinks($, 'Read', { file_path: '/work/app/src/main.ts' })).toEqual([['src/main.ts', `${root}/work/app/src/main.ts`]])
-    expect(await toolLinks($, 'Edit', { file_path: '/home/me/notes/todo.md' })).toEqual([['~/notes/todo.md', `${root}/home/me/notes/todo.md`]])
-    expect(await toolLinks($, 'Write', { file_path: '/srv/one/two/three/four/five/six.ts' })).toEqual([[toolOutput === 'quiet' ? '/srv/one/…/five/six.ts' : '/srv/one/two/three/four/five/six.ts', `${root}/srv/one/two/three/four/five/six.ts`]])
-    expect(await toolLinks($, 'Grep', { pattern: 'TODO', path: 'src' })).toEqual([['src', `${root}/work/app/src`]])
-    expect(await toolLinks($, 'Glob', { pattern: '*.ts' })).toEqual([])
-    expect(await toolLinks($, 'Bash', { command: 'cat /srv/app/main.ts' })).toEqual([])
-    expect(await toolLinks($, 'mcp__github__get_file_contents', { owner: 'o', repo: 'r', path: 'README.md' })).toEqual([])
+    expect(await toolLinks($, disk, 'Read', { file_path: '/work/app/src/main.ts' })).toEqual([['src/main.ts', `${root}/work/app/src/main.ts`]])
+    expect(await toolLinks($, disk, 'Edit', { file_path: '/home/me/notes/todo.md' })).toEqual([['~/notes/todo.md', `${root}/home/me/notes/todo.md`]])
+    expect(await toolLinks($, disk, 'Write', { file_path: '/srv/one/two/three/four/five/six.ts' })).toEqual([[toolOutput === 'quiet' ? '/srv/one/…/five/six.ts' : '/srv/one/two/three/four/five/six.ts', `${root}/srv/one/two/three/four/five/six.ts`]])
+    expect(await toolLinks($, disk, 'Grep', { pattern: 'TODO', path: 'src' })).toEqual([['src', `${root}/work/app/src`]])
+    expect(await toolLinks($, disk, 'Glob', { pattern: '*.ts' })).toEqual([])
+    expect(await toolLinks($, disk, 'Bash', { command: 'cat /srv/app/main.ts' })).toEqual([])
+    expect(await toolLinks($, disk, 'mcp__github__get_file_contents', { owner: 'o', repo: 'r', path: 'README.md' })).toEqual([])
+    expect(disk.stats).toEqual(['/work/app/src/main.ts', '/home/me/notes/todo.md', '/srv/one/two/three/four/five/six.ts', '/work/app/src'])
   })
 
   test(`a tool group links its file paths (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
-    filesAt(on, '2.1.289')
+    const disk = filesAt(on, '2.1.289')
     if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
     const calls = [toolCall('Read', { file_path: '/work/app/a.ts' }, 'g-1'), toolCall('Read', { file_path: '/work/app/b.ts' }, 'g-2')]
-    const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolGroup', props: { calls, isActive: false, isExpanded: false } })
+    const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolGroup', props: { calls, isActive: false, isExpanded: false } }))
     const b = ['b.ts', 'file:///work/app/b.ts']
     expect(await linkPairs(ui)).toEqual(toolOutput === 'quiet' ? [['a.ts', 'file:///work/app/a.ts'], b] : [b])
     await ui.unmount()
@@ -1034,35 +1087,37 @@ for (const toolOutput of ['full', 'quiet'] as const) {
 }
 
 test('Windows paths in tool rows link with forward slashes, and UNC paths stay text', async ($, on) => {
-  filesAt(on, '2.1.289')
+  const disk = filesAt(on, '2.1.289')
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-  expect(await toolLinks($, 'Grep', { pattern: 'x', path: 'src\\hooks' })).toEqual([['src\\hooks', 'file:///work/app/src/hooks']])
-  expect(await toolLinks($, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([['C:\\Users\\me\\x.ts', 'file:///C:/Users/me/x.ts']])
-  expect(await toolLinks($, 'Read', { file_path: '\\\\server\\share\\x.txt' })).toEqual([])
-  expect(await toolLinks($, 'Edit', { file_path: '//server/share/y.txt' })).toEqual([])
-  expect(await toolLinks($, 'Grep', { pattern: 'x', path: '\\\\?\\UNC\\server\\share' })).toEqual([])
+  expect(await toolLinks($, disk, 'Grep', { pattern: 'x', path: 'src\\hooks' })).toEqual([['src\\hooks', 'file:///work/app/src/hooks']])
+  expect(await toolLinks($, disk, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([['C:\\Users\\me\\x.ts', 'file:///C:/Users/me/x.ts']])
+  expect(await toolLinks($, disk, 'Read', { file_path: '\\\\server\\share\\x.txt' })).toEqual([])
+  expect(await toolLinks($, disk, 'Edit', { file_path: '//server/share/y.txt' })).toEqual([])
+  expect(await toolLinks($, disk, 'Grep', { pattern: 'x', path: '\\\\?\\UNC\\server\\share' })).toEqual([])
+  expect(disk.stats.filter(path => path.includes('server'))).toEqual([])
 })
 
-test('under WSL a drive path in a tool row is already a Windows path, so it links without wsl.localhost', async ($, on) => {
-  filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
+test('under WSL a drive path in a tool row is not found from the Linux side, so it stays text, while a Linux path links through wsl.localhost', async ($, on) => {
+  const disk = filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' }, { '/work/app/z.ts': {} }, null)
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-  expect(await toolLinks($, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([['C:\\Users\\me\\x.ts', 'file:///C:/Users/me/x.ts']])
-  expect(await toolLinks($, 'Edit', { file_path: 'C:/Users/me/y.ts' })).toEqual([['C:/Users/me/y.ts', 'file:///C:/Users/me/y.ts']])
-  expect(await toolLinks($, 'Read', { file_path: '/work/app/z.ts' })).toEqual([['z.ts', 'file://wsl.localhost/Ubuntu/work/app/z.ts']])
+  expect(await toolLinks($, disk, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([])
+  expect(await toolLinks($, disk, 'Edit', { file_path: 'C:/Users/me/y.ts' })).toEqual([])
+  expect(await toolLinks($, disk, 'Read', { file_path: '/work/app/z.ts' })).toEqual([['z.ts', 'file://wsl.localhost/Ubuntu/work/app/z.ts']])
+  expect(disk.stats.map(path => path.slice(path.lastIndexOf('/') + 1))).toEqual(['x.ts', 'y.ts', 'z.ts'])
 })
 
 test('a tool path whose link would pass 2048 characters stays text, and the row still draws', async ($, on) => {
-  filesAt(on, '2.1.289')
+  const disk = filesAt(on, '2.1.289')
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-  expect(await toolLinks($, 'Read', { file_path: `/work/app/${'文档/'.repeat(110)}说明.md` })).toEqual([])
-  expect(await toolLinks($, 'Read', { file_path: '/work/app/a b#c?d%e é.ts' })).toEqual([['a b#c?d%e é.ts', 'file:///work/app/a%20b%23c%3Fd%25e%20%C3%A9.ts']])
+  expect(await toolLinks($, disk, 'Read', { file_path: `/work/app/${'文档/'.repeat(110)}说明.md` })).toEqual([])
+  expect(await toolLinks($, disk, 'Read', { file_path: '/work/app/a b#c?d%e é.ts' })).toEqual([['a b#c?d%e é.ts', 'file:///work/app/a%20b%23c%3Fd%25e%20%C3%A9.ts']])
 })
 
 test('shell edit cards link their file headers', async ($, on) => {
-  filesAt(on, '2.1.289')
+  const disk = filesAt(on, '2.1.289')
   if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
   const output = { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/work/app/src/app.ts', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+one'] }] }], moreFiles: 0 } }
-  const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolResult', props: { tool_use_id: 'be-1', tool: 'Bash', output, isErrored: false } })
+  const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolResult', props: { tool_use_id: 'be-1', tool: 'Bash', output, isErrored: false } }))
   expect(await linkPairs(ui)).toEqual([['src/app.ts', 'file:///work/app/src/app.ts']])
   expect((await ui.find({ type: 'Text', text: /^src\/app\.ts $/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
   await ui.unmount()
@@ -1070,9 +1125,9 @@ test('shell edit cards link their file headers', async ($, on) => {
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`tool rows and file:// links still link a one-part absolute path on ${surface}`, async ($, on) => {
-    filesAt(on, '2.1.289')
+    const disk = filesAt(on, '2.1.289', {}, { '/etc': { kind: 'dir' } })
     if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-    const row = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/etc' }, 'one-part') })
+    const row = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/etc' }, 'one-part') }))
     expect(await linkPairs(row)).toEqual(surface === 'terminal' ? [['/etc', 'file:///etc']] : [])
     await row.unmount()
     const reply = await $.ui.mount({ ...mount('[/config](file:///config)'), surface })
@@ -1088,11 +1143,207 @@ for (const [where, surface, base, env] of [
   ['in a session over SSH', 'terminal', '2.1.289', { SSH_TTY: '/dev/pts/3' }],
 ] as const) {
   test(`tool rows keep plain paths ${where}`, async ($, on) => {
-    filesAt(on, base, env)
-    const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/work/app/src/main.ts' }, 'p-1') })
+    const disk = filesAt(on, base, env)
+    const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/work/app/src/main.ts' }, 'p-1') }))
     expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
     expect((await ui.find({ type: 'Text', text: /^src\/main\.ts$/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+    expect(disk.stats).toEqual([])
     await ui.unmount()
+  })
+}
+
+const linkLabels = async (ui: { findAll: (query: { type: 'Link' }) => Promise<{ props: { label?: unknown } }[]> }) => (await ui.findAll({ type: 'Link' })).map(l => l.props.label)
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a path links only once it is found on disk, and a missing one stays path-colored text, on ${surface}`, async ($, on) => {
+    const disk = filesAt(on, '2.1.289', {}, { '/srv/app/gone.ts': null, '/home/me/notes/gone.md': null })
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await disk.drawn($.ui.mount({ ...mount('Open /srv/app/main.ts, /srv/app/gone.ts, ~/notes/gone.md and ~/notes/todo.md'), surface }))
+    expect(await linkLabels(ui)).toEqual(surface === 'terminal' ? ['/srv/app/main.ts', '~/notes/todo.md'] : [])
+    expect([await pathTexts(ui, /^\/srv\/app\/gone\.ts$/), await pathTexts(ui, /^~\/notes\/gone\.md$/)]).toEqual([1, 1])
+    expect(disk.stats).toEqual(surface === 'terminal' ? ['/srv/app/main.ts', '/srv/app/gone.ts', '/home/me/notes/gone.md', '/home/me/notes/todo.md'] : [])
+    await ui.unmount()
+    const row = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/srv/app/gone.ts' }, 'gone-1') }))
+    expect(await row.findAll({ type: 'Link' })).toHaveLength(0)
+    await row.unmount()
+  })
+
+  test(`a path draws the same before and after its check lands, only its link added a tick later, on ${surface}`, async ($, on) => {
+    const disk = filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount(PATHS), surface })
+    const before = await ui.drawn()
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    await disk.clock.settle()
+    expect(await linkLabels(ui)).toEqual(surface === 'terminal' ? PATH_TEXTS : [])
+    expect(JSON.stringify(withoutLinks(await ui.drawn()))).toBe(JSON.stringify(withoutLinks(before)))
+    await ui.unmount()
+  })
+}
+
+test('a file is checked once a session, however many replies and rows name it, and file:// links are never checked', async ($, on) => {
+  const disk = filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  for (const text of ['See /srv/app/main.ts', 'Again /srv/app/main.ts and [/tmp/n.md](file:///tmp/n.md)']) {
+    const ui = await disk.drawn($.ui.mount(mount(text)))
+    expect(await linkLabels(ui)).toContain('/srv/app/main.ts')
+    await ui.unmount()
+  }
+  expect(await toolLinks($, disk, 'Read', { file_path: '/srv/app/main.ts' })).toEqual([['/srv/app/main.ts', 'file:///srv/app/main.ts']])
+  expect(disk.stats).toEqual(['/srv/app/main.ts'])
+})
+
+test('a Write row drawn before its file exists links once the file is there, after a short wait', async ($, on) => {
+  const disk = filesAt(on, '2.1.289', {}, { '/work/app/new.md': null })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const running = { ...toolCall('Write', { file_path: '/work/app/new.md', content: 'x' }, 'write-1'), isRunning: true }
+  const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolUse', props: running }))
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+  disk.files['/work/app/new.md'] = {}
+  await ui.redraw({ ...running, isRunning: false })
+  await disk.clock.settle()
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+  await disk.clock.advance(1000)
+  expect(await linkPairs(ui)).toEqual([['new.md', 'file:///work/app/new.md']])
+  expect(disk.stats).toEqual(['/work/app/new.md', '/work/app/new.md'])
+  await ui.unmount()
+})
+
+test('a file drawn again while its first check is under way is checked once more when that check misses', async ($, on) => {
+  const disk = filesAt(on, '2.1.289', {}, { '/work/app/race.md': null })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  disk.late['/work/app/race.md'] = 500
+  const running = { ...toolCall('Write', { file_path: '/work/app/race.md', content: 'x' }, 'race-1'), isRunning: true }
+  const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolUse', props: running }))
+  disk.files['/work/app/race.md'] = {}
+  await ui.redraw({ ...running, isRunning: false })
+  await disk.clock.advance(500)
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+  await disk.clock.advance(1000)
+  expect(await linkPairs(ui)).toEqual([['race.md', 'file:///work/app/race.md']])
+  expect(disk.stats).toEqual(['/work/app/race.md', '/work/app/race.md'])
+  await ui.unmount()
+})
+
+test('a missing path is checked again only when something draws it after the wait', async ($, on) => {
+  const disk = filesAt(on, '2.1.289', {}, { '/srv/app/later.ts': null })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const ui = await disk.drawn($.ui.mount(mount('See /srv/app/later.ts')))
+  await disk.clock.advance(5000)
+  expect(disk.stats).toEqual(['/srv/app/later.ts'])
+  disk.files['/srv/app/later.ts'] = {}
+  await ui.redraw()
+  await disk.clock.settle()
+  expect(await linkLabels(ui)).toEqual(['/srv/app/later.ts'])
+  expect(disk.stats).toEqual(['/srv/app/later.ts', '/srv/app/later.ts'])
+  await ui.unmount()
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a path whose link leads to a program or launcher stays text, on ${surface}`, async ($, on) => {
+    const disk = filesAt(on, '2.1.289', {}, {
+      '/work/app/notes.md': { realPath: '/Applications/Calculator.app', kind: 'dir' },
+      '/work/app/readme.txt': { realPath: '/tmp/run/setup.command' },
+      '/work/app/guide.md': { realPath: '/srv/docs/guide.md' },
+      '/work/app/odd.md': { kind: 'other' },
+      '/work/app/lost.md': { realPath: null },
+      '/work/app/review.md': { realPath: '/tmp/payload#x.command' },
+      '/work/app/query.md': { realPath: '/tmp/payload?x.sh' },
+      '/work/app/bundle.md': { realPath: '/tmp/review#1/Launch.app', kind: 'dir' },
+      '/work/app/inside.md': { realPath: '/tmp/a?b/Tool.app/Contents/MacOS/Tool' },
+      '/work/app/win.md': { realPath: 'C:\\work\\payload#x.cmd' },
+    })
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await disk.drawn($.ui.mount({ ...mount('See ./notes.md, ./readme.txt, ./guide.md, ./odd.md, ./lost.md, ./review.md, ./query.md, ./bundle.md, ./inside.md and ./win.md'), surface }))
+    expect(await linkLabels(ui)).toEqual(surface === 'terminal' ? ['./guide.md'] : [])
+    await ui.unmount()
+    for (const file of ['/work/app/notes.md', '/work/app/readme.txt']) {
+      const row = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: file }, `link-${file}`) }))
+      expect(await row.findAll({ type: 'Link' })).toHaveLength(0)
+      await row.unmount()
+    }
+  })
+}
+
+const bytes = (text: string) => ({ base64: btoa(text) })
+
+const PROGRAM_FILES: Record<string, string> = {
+  '/work/app/bin/deploy': '#!/bin/sh\necho hi\n',
+  '/work/app/bin/tool': '\x7fELF\x02\x01\x01\x00',
+  '/work/app/bin/mac32': '\xfe\xed\xfa\xce\x07\x00',
+  '/work/app/bin/mac64': '\xfe\xed\xfa\xcf\x07\x00',
+  '/work/app/bin/mac32le': '\xce\xfa\xed\xfe\x07\x00',
+  '/work/app/bin/mac64le': '\xcf\xfa\xed\xfe\x07\x00',
+  '/work/app/bin/fat': '\xca\xfe\xba\xbe\x00\x02',
+  '/work/app/bin/fat64': '\xca\xfe\xba\xbf\x00\x02',
+  '/work/app/bin/fatle': '\xbe\xba\xfe\xca\x02\x00',
+  '/work/app/bin/fat64le': '\xbf\xba\xfe\xca\x02\x00',
+  '/work/app/bin/win': 'MZ\x90\x00',
+  '/work/app/.envrc': '#!/usr/bin/env bash\n',
+}
+
+const PLAIN_FILES: Record<string, string> = {
+  '/work/app/Makefile': 'all:\n\tgo build\n',
+  '/work/app/LICENSE': 'MIT License\n',
+  '/work/app/Dockerfile': 'FROM node:22\n',
+  '/work/app/.gitignore': 'node_modules\n',
+  '/work/app/empty': '',
+  '/work/app/x': '#',
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a file with no extension links unless it starts as a script or a program, on ${surface}`, async ($, on) => {
+    const disk = filesAt(on, '2.1.289', {}, Object.fromEntries(Object.entries({ ...PROGRAM_FILES, ...PLAIN_FILES }).map(([path, text]) => [path, bytes(text)])))
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const paths = [...Object.keys(PROGRAM_FILES), ...Object.keys(PLAIN_FILES)].map(path => path.replace('/work/app/', './'))
+    const ui = await disk.drawn($.ui.mount({ ...mount(paths.join(' and '), 1000), surface }))
+    expect(await linkLabels(ui)).toEqual(surface === 'terminal' ? Object.keys(PLAIN_FILES).map(path => path.replace('/work/app/', './')) : [])
+    await ui.unmount()
+    for (const [file, linked] of [['/work/app/bin/deploy', false], ['/work/app/bin/win', false], ['/work/app/Makefile', true]] as const) {
+      const row = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Edit', { file_path: file }, `sniff-${file}`) }))
+      expect([file, (await row.findAll({ type: 'Link' })).length]).toEqual([file, linked && surface === 'terminal' ? 1 : 0])
+      await row.unmount()
+    }
+    expect(disk.reads).toEqual(surface === 'terminal' ? [...Object.keys(PROGRAM_FILES), ...Object.keys(PLAIN_FILES)] : [])
+  })
+}
+
+test('a file with no extension over 64 KiB never links and is never read, while a large document links unread', async ($, on) => {
+  const disk = filesAt(on, '2.1.289', {}, {
+    '/work/app/bin/big': { size: 64 * 1024 + 1, base64: btoa('all:\n') },
+    '/work/app/NOTICE': { size: 64 * 1024, base64: btoa('Notices\n') },
+    '/work/app/data/big.csv': { size: 50 * 1024 * 1024 },
+  })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const ui = await disk.drawn($.ui.mount(mount('See ./bin/big, ./NOTICE and ./data/big.csv')))
+  expect(await linkLabels(ui)).toEqual(['./NOTICE', './data/big.csv'])
+  expect(disk.reads).toEqual(['/work/app/NOTICE'])
+  await ui.unmount()
+})
+
+test('a program with no extension is read once for every name that leads to it, until it changes', async ($, on) => {
+  const elf = btoa('\x7fELF\x02')
+  const disk = filesAt(on, '2.1.289', {}, {
+    '/work/app/a': { realPath: '/opt/bin/tool', base64: elf },
+    '/work/app/b': { realPath: '/opt/bin/tool', base64: elf },
+    '/opt/bin/tool': { base64: elf },
+    '/work/app/c': { realPath: '/opt/bin/tool', mtimeMs: 5, base64: elf },
+  })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const ui = await disk.drawn($.ui.mount(mount('Run ./a, ./b or ./c')))
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+  expect(disk.reads).toEqual(['/opt/bin/tool', '/opt/bin/tool'])
+  await ui.unmount()
+})
+
+for (const env of [{ SSH_CONNECTION: '10.0.0.2 52814 10.0.0.9 22' }, { SSH_TTY: '/dev/pts/3' }] as Record<string, string>[]) {
+  test(`a session over SSH (${Object.keys(env)[0]}) checks no file, since nothing links`, async ($, on) => {
+    const disk = filesAt(on, '2.1.289', env)
+    const ui = await disk.drawn($.ui.mount(mount(PATHS)))
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    await ui.unmount()
+    expect(await toolLinks($, disk, 'Read', { file_path: '/work/app/src/main.ts' })).toEqual([])
+    expect([disk.stats, disk.reads]).toEqual([[], []])
   })
 }
 
@@ -1983,9 +2234,9 @@ const DOCUMENTS = ['/tmp/doc/a.ts', '/tmp/doc/a.md', '/tmp/doc/a.json', '/tmp/do
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`paths to programs and launchers stay plain colored text on ${surface}, while documents link`, async ($, on) => {
-    filesAt(on, '2.1.289')
+    const disk = filesAt(on, '2.1.289', {}, { '/tmp/doc/scripts/': { kind: 'dir' } })
     if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
-    const ui = await $.ui.mount({ ...mount([...PROGRAMS, ...DOCUMENTS].join(' and '), 1000), surface })
+    const ui = await disk.drawn($.ui.mount({ ...mount([...PROGRAMS, ...DOCUMENTS].join(' and '), 1000), surface }))
     expect((await ui.findAll({ type: 'Link' })).map(l => l.props.label)).toEqual(surface === 'terminal' ? DOCUMENTS : [])
     for (const path of PROGRAMS) expect([path, (await ui.find({ type: 'Text', text: new RegExp(`^${path.replace(/[.]/g, '\\$&')}$`) }))?.props.color]).toEqual([path, PRESETS['catppuccin-mocha'].path])
     await ui.unmount()
@@ -2004,11 +2255,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   for (const toolOutput of ['full', 'quiet'] as const) {
     test(`tool rows and shell edit cards keep programs and launchers as plain colored text on ${surface} (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
-      filesAt(on, '2.1.289')
+      const disk = filesAt(on, '2.1.289')
       if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
       let calls = 0
       const row = async (tool: string, input: unknown) => {
-        const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall(tool, input, `launcher-${calls++}`) })
+        const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall(tool, input, `launcher-${calls++}`) }))
         const links = await linkPairs(ui)
         await ui.unmount()
         return links
@@ -2019,11 +2270,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(await row('Grep', { pattern: 'x', path: '/Applications/Calculator.app/' })).toEqual([])
       expect(await row('Read', { file_path: '/work/app/src/app.ts' })).toEqual(surface === 'terminal' ? [['src/app.ts', 'file:///work/app/src/app.ts']] : [])
       const grouped = [toolCall('Read', { file_path: '/work/app/src/app.ts' }, 'launcher-g1'), toolCall('Read', { file_path: '/work/app/install.sh' }, 'launcher-g2')]
-      const group = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolGroup', props: { calls: grouped, isActive: false, isExpanded: false } })
+      const group = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'ToolGroup', props: { calls: grouped, isActive: false, isExpanded: false } }))
       expect(await linkPairs(group)).toEqual(surface === 'terminal' && toolOutput === 'quiet' ? [['src/app.ts', 'file:///work/app/src/app.ts']] : [])
       await group.unmount()
       const output = { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/work/app/build.sh', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+one'] }] }], moreFiles: 0 } }
-      const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolResult', props: { tool_use_id: 'launcher-card', tool: 'Bash', output, isErrored: false } })
+      const ui = await disk.drawn($.ui.mount({ plugin: 'prismantis', surface, component: 'ToolResult', props: { tool_use_id: 'launcher-card', tool: 'Bash', output, isErrored: false } }))
       expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
       expect((await ui.find({ type: 'Text', text: /^build\.sh $/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
       await ui.unmount()

@@ -22,6 +22,7 @@ declare module 'claude-code' {
       setupAt: number
       setupFocus: string
       setupLand: string
+      filesFound: number
       drawn: StateFamily<number>
     }
   }

@@ -15,6 +15,8 @@ export type Theme = Partial<Record<(typeof TOKENS)[number], string>>
 
 export type Clock = 'off' | '24h' | '12h'
 
+export type FileCheck = { found: ReadonlySet<string>; asked: Set<string> }
+
 export type Style = {
   theme: Theme
   background?: string
@@ -43,6 +45,7 @@ export type Style = {
   editorLinks: boolean
   fileLinks: string | null
   pathLinks: boolean
+  files?: FileCheck
   diagramHints: boolean
   issueHint: boolean
   rtl: 'auto' | Terminal | 'off'

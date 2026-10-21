@@ -56,6 +56,12 @@ for (let end = 100; end <= streamSource.length; end += 100) {
 const hebrew = (n, tag = '') => Array.from({ length: n }, (_, i) => `פסקה ${i}${tag} עם **מודגש**, \`קוד\`, 99.9% ו-250ms וגם kubectl באנגלית ועוד מילים כדי שהשורה תתכסה.`).join("\n\n")
 const count = n => (n == null || n === false ? 0 : Array.isArray(n) ? n.reduce((a, c) => a + count(c), 0) : typeof n !== "object" ? 1 : 1 + count(n.children))
 const linked = { ...style, httpLinks: true, fileLinks: 'file://', pathLinks: true, home: '/home/me', cwd: '/work' }
+const found = (text, drawn) => {
+  if (!drawn.pathLinks) return drawn
+  const asked = new Set()
+  reply(text, { ...drawn, files: { found: new Set(), asked } })
+  return { ...drawn, files: { found: asked, asked: new Set() } }
+}
 const paragraphs = Array.from({ length: 300 }, (_, i) => `Paragraph ${i} with **bold**, \`code\`, 99.9% and ~/src/app.ts.`).join("\n\n")
 const pathTable = `| file | notes |\n|---|---|\n${Array.from({ length: 300 }, (_, i) => `| /srv/app/src/f${i}.ts | ~/notes/n${i}.md |`).join('\n')}`
 const nodeRows = [
@@ -66,7 +72,7 @@ const nodeRows = [
   ["nodes: 300 table rows of paths, linked", pathTable, linked],
   ["nodes: 300 Hebrew paragraphs", hebrew(300)],
   ["nodes: demo reply", demo],
-].map(([stage, text, drawn = style]) => ({ stage, nodes: count(reply(text, drawn)) }))
+].map(([stage, text, drawn = style]) => ({ stage, nodes: count(reply(text, found(text, drawn))) }))
 const editLines = Array.from({ length: 400 }, (_, i) => `+const v${i} = await fetch("/api/${i}", { retries: ${i % 5} })`)
 nodeRows.push({ stage: 'nodes: opened 400-line diff card', nodes: count(renderDiffCard(el, style, { filePath: '/repo/app.ts', structuredPatch: [{ oldStart: 1, newStart: 1, lines: editLines }] }, () => ({ folded: false, element: null }), 'bench')) })
 

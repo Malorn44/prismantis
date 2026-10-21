@@ -11,7 +11,7 @@ import { clipboardCommand } from './clipboard'
 import { FIGURE_HINT } from './figure'
 import { drawDiagrams } from './mermaid'
 import type { CopyButton, Fold, TerminalEnv } from './render'
-import { bashEdits, drawMath, drawsHyperlinks, editNotes, fileRoot, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
+import { bashEdits, drawMath, drawsHyperlinks, editNotes, fileLook, fileRoot, hasShellOutput, instanceKey, isReadOnlyCall, leftToEngine, mirrored, noteTip, remember, rememberCall, renderBashEdits, renderBlocks, renderDiffCard, renderExpandedShell, renderFailure, renderShellResult, renderToolGroup, renderToolRow, renderTurnDuration, renderUserPrompt, startsAsProgram, takesClickableMarks, takesEditorLinks, takesHttpLinks, withoutBashEdits } from './render'
 import type { SetupStep } from './help'
 import { HINT, ISSUE_HINT, SETUP_DONE, SETUP_PANE_KEYS, SETUP_PANE_OPENED, THEME_PREVIEW, findSetup, helpText, languageShowcase, rtlShowcaseText, setupParts, setupSteps, setupText, showcaseText } from './help'
 import { PRESET_NAMES } from './presets'
@@ -65,6 +65,7 @@ const turnEnds = atom({ plugin: 'prismantis', key: 'turnEnds' } as const, [])
 const setupAt = atom({ plugin: 'prismantis', key: 'setupAt' } as const, 0)
 const setupFocus = atom({ plugin: 'prismantis', key: 'setupFocus' } as const, '')
 const setupLand = atom({ plugin: 'prismantis', key: 'setupLand' } as const, '')
+const filesFound = atom({ plugin: 'prismantis', key: 'filesFound' } as const, 0)
 
 const firstDrawn = async ($: EngineInterface, id: string): Promise<number> => {
   const ref = { plugin: 'prismantis', key: 'drawn', id } as const
@@ -256,6 +257,68 @@ const readLinkReach = async ($: EngineInterface, style: Style): Promise<LinkReac
 }
 
 const linkReach = ($: EngineInterface, probes: Probes, style: Style): Promise<LinkReach> => (probes.links ??= readLinkReach($, style))
+
+type FileChecks = { found: Set<string>; missed: Set<string>; pending: Set<string>; later: Set<string>; batch: string[]; sniffed: Map<string, Promise<boolean>> }
+
+const RECHECK_MS = 1000
+
+const sniffs = ($: EngineInterface, checks: FileChecks, realPath: string, mtimeMs: number): Promise<boolean> =>
+  remember(checks.sniffed, `${realPath}\0${mtimeMs}`, () => $.fs.read(realPath, { as: 'bytes' }).then(bytes => !startsAsProgram(bytes.base64)).catch(() => false), 500)
+
+const opensSafely = async ($: EngineInterface, checks: FileChecks, file: string): Promise<boolean> => {
+  const stat = await $.fs.stat(file, { resolve: true })
+  if (stat.realPath === undefined) return false
+  const look = fileLook(stat.realPath, stat.kind, stat.size)
+  return look === 'sniff' ? sniffs($, checks, stat.realPath, stat.mtimeMs) : look === 'link'
+}
+
+const queueFile = ($: EngineInterface, checks: FileChecks, file: string): void => {
+  if (checks.batch.length === 0) $.clock.after(0, () => void checkBatch($, checks).catch(() => undefined))
+  checks.batch.push(file)
+  checks.pending.add(file)
+}
+
+const recheckLater = ($: EngineInterface, checks: FileChecks, misses: string[]): void => {
+  for (const file of misses) checks.missed.add(file)
+  $.clock.after(RECHECK_MS, () => {
+    for (const file of misses) {
+      checks.missed.delete(file)
+      if (checks.later.delete(file)) queueFile($, checks, file)
+    }
+  })
+}
+
+const checkBatch = async ($: EngineInterface, checks: FileChecks): Promise<void> => {
+  const files = checks.batch
+  checks.batch = []
+  const opens = await Promise.all(files.map(file => opensSafely($, checks, file).catch(() => false)))
+  for (const file of files) checks.pending.delete(file)
+  const found = files.filter((_, i) => opens[i])
+  for (const file of found) {
+    checks.found.add(file)
+    checks.later.delete(file)
+  }
+  const misses = files.filter((_, i) => !opens[i])
+  if (misses.length) recheckLater($, checks, misses)
+  if (found.length) await update($, filesFound, n => n + 1)
+}
+
+const askFiles = ($: EngineInterface, checks: FileChecks, asked: Set<string>): void => {
+  for (const file of asked) {
+    if (checks.found.has(file)) continue
+    if (checks.pending.has(file) || checks.missed.has(file)) checks.later.add(file)
+    else queueFile($, checks, file)
+  }
+}
+
+const withFiles = async <T,>($: EngineInterface, checks: FileChecks, base: Style, draw: (style: Style) => T): Promise<T> => {
+  if (!base.pathLinks) return draw(base)
+  await read($, filesFound)
+  const files = { found: checks.found, asked: new Set<string>() }
+  const drawn = draw({ ...base, files })
+  askFiles($, checks, files.asked)
+  return drawn
+}
 
 const fileCard = async ($: EngineInterface, el: ReturnType<EngineInterface['ui']['resolve']>, output: unknown, id: string, style: Style, probes: Probes, drawn: () => Style, columns?: number): Promise<RenderElement | undefined> => {
   const press = (await linkReach($, probes, style)).marks
@@ -551,6 +614,7 @@ export const register: Register = (on, options) => {
   const latex: LatexSession = { style, color: ratexColor(style.theme.diagramText ?? style.theme.codeText ?? '#808080'), pending: new Set(), wanted: new Set(), batch: [], queue: Promise.resolve() }
   const picked: Picked = { theme: firstTheme, options, latex }
   const probes: Probes = {}
+  const checks: FileChecks = { found: new Set(), missed: new Set(), pending: new Set(), later: new Set(), batch: [], sniffed: new Map() }
   const forSurface = (base: Style, surface: RenderSurface, links: LinkReach): Style => {
     const drawn = surface === 'terminal' ? (links.http || links.editor ? { ...base, httpLinks: links.http, editorLinks: links.editor, fileLinks: links.files, pathLinks: links.paths } : base) : { ...base, htmlCopy: null, nativeCode: true }
     return surface === 'mobile' && drawn.copyButtonStyle === 'hover' ? { ...drawn, copyButtonStyle: 'inline' } : drawn
@@ -576,13 +640,13 @@ export const register: Register = (on, options) => {
         for (const call of e.props.calls) if (call.tool_use_id) rememberCall(expandedCalls, call.tool_use_id, 500)
         return next(e)
       }
-      return renderToolGroup($.ui.resolve(e), forSurface(fit(e.viewport), e.surface, await linkReach($, probes, style)), e.props.calls, e.props.isActive, e.viewport?.columns)
+      return withFiles($, checks, forSurface(fit(e.viewport), e.surface, await linkReach($, probes, style)), drawn => renderToolGroup($.ui.resolve(e), drawn, e.props.calls, e.props.isActive, e.viewport?.columns))
     })
     on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
       await locate($, style)
       noteCommand(e.props.tool_use_id, e.props.tool, e.props.input)
       if (quiet && isReadOnlyCall(e.props.tool, e.props.input)) rememberCall(readOnlyCalls, e.props.tool_use_id)
-      if (!expandedCalls.has(e.props.tool_use_id)) return renderToolRow($.ui.resolve(e), forSurface(fit(e.viewport), e.surface, await linkReach($, probes, style)), e.props, e.viewport?.columns)
+      if (!expandedCalls.has(e.props.tool_use_id)) return withFiles($, checks, forSurface(fit(e.viewport), e.surface, await linkReach($, probes, style)), drawn => renderToolRow($.ui.resolve(e), drawn, e.props, e.viewport?.columns))
       const shell = e.props.tool === 'Bash' || e.props.tool === 'PowerShell'
       return shell && typeof e.props.output !== 'string' ? renderExpandedShell($.ui.resolve(e), fit(e.viewport), e.props) : next(e)
     })
@@ -597,7 +661,8 @@ export const register: Register = (on, options) => {
         const above = !hasShellOutput(output) ? null : quiet ? renderShellResult(el, fit(e.viewport), output) : await next({ ...e, props: { ...e.props, output } })
         firstEdit ??= e.props.tool_use_id
         const notes = editNotes(edits, firstEdit === e.props.tool_use_id, shellCommands.get(e.props.tool_use_id))
-        const drawn = renderBashEdits(el, forSurface(cards(), e.surface, await linkReach($, probes, style)), edits, folder($, el, await read($, unfolded), (await linkReach($, probes, style)).marks), e.props.tool_use_id, above !== null, notes, e.viewport?.columns)
+        const fold = folder($, el, await read($, unfolded), (await linkReach($, probes, style)).marks)
+        const drawn = await withFiles($, checks, forSurface(cards(), e.surface, await linkReach($, probes, style)), linked => renderBashEdits(el, linked, edits, fold, e.props.tool_use_id, above !== null, notes, e.viewport?.columns))
         return above === null ? drawn : <el.Box flexDirection="column">{above}{drawn}</el.Box>
       }
       if (!quiet) return next(e)
@@ -726,8 +791,7 @@ export const register: Register = (on, options) => {
     const math = await mathOfBlocks($, latex, e.surface, blocks)
     const pictures = await picturesOf($, style, probes, e.surface, blocks)
     const open = await read($, unfolded)
-    const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
-    return <Box flexDirection="column" rowGap={1} {...fullWidth(e.props.text)}>{drawMarkdown($, el, surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, undefined, open, { id: e.requestId, press: reach.marks })}</Box>
+    return withFiles($, checks, forSurface(fit(e.viewport), e.surface, reach), surfaceStyle => <Box flexDirection="column" rowGap={1} {...fullWidth(e.props.text)}>{drawMarkdown($, el, surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, undefined, open, { id: e.requestId, press: reach.marks })}</Box>)
   })
 
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
@@ -749,9 +813,8 @@ export const register: Register = (on, options) => {
     const reach = await linkReach($, probes, style)
     const math = await mathOfBlocks($, latex, e.surface, blocks)
     const pictures = await picturesOf($, style, probes, e.surface, blocks)
-    const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     const open = await read($, unfolded)
-    return (
+    return withFiles($, checks, forSurface(fit(e.viewport), e.surface, reach), surfaceStyle => (
       <Box key="msg" flexDirection="row">
         <Box width={2} flexShrink={0}>
           <Text color={style.theme.accent}>{e.props.isFirstOfReply ? '●' : ' '}</Text>
@@ -760,7 +823,7 @@ export const register: Register = (on, options) => {
           {drawMarkdown($, el, narration ? { ...surfaceStyle, narration } : surfaceStyle, blocks, columnsOf(e.viewport), math, pictures, blocks.length > 1 || hasRtl(e.props.text) ? e.props.text : undefined, open, { id: e.requestId, press: reach.marks })}
         </Box>
       </Box>
-    )
+    ))
   })
 
   on('prismantis.markdown', async ($, e, next) => {
@@ -768,7 +831,6 @@ export const register: Register = (on, options) => {
     if (blocks.length === 0) return next(e)
     const el = $.ui.resolve({ surface: e.surface, component: 'AssistantMessage' })
     const { Box } = el
-    const surfaceStyle = forSurface(style, e.surface, await linkReach($, probes, style))
-    return { value: <Box flexDirection="column" rowGap={1} {...fullWidth(e.text)}>{drawMarkdown($, el, { ...surfaceStyle, copyButtons: false }, blocks, Math.max(20, e.columns || 0))}</Box> }
+    return { value: await withFiles($, checks, forSurface(style, e.surface, await linkReach($, probes, style)), surfaceStyle => <Box flexDirection="column" rowGap={1} {...fullWidth(e.text)}>{drawMarkdown($, el, { ...surfaceStyle, copyButtons: false }, blocks, Math.max(20, e.columns || 0))}</Box>) }
   })
 }

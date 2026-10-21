@@ -142,7 +142,7 @@ export const drawsHyperlinks = (env: TerminalEnv): boolean => {
     || env.TERMINAL_EMULATOR === 'JetBrains-JediTerm'
 }
 
-type Reach = Pick<Style, 'httpLinks' | 'editorLinks' | 'fileLinks' | 'pathLinks' | 'cwd' | 'home'>
+type Reach = Pick<Style, 'httpLinks' | 'editorLinks' | 'fileLinks' | 'pathLinks' | 'files' | 'cwd' | 'home'>
 
 const LAUNCHERS = new Set([
   'app', 'command', 'tool', 'terminal', 'pkg', 'mpkg', 'mobileconfig', 'prefpane', 'workflow', 'action', 'fileloc', 'inetloc', 'webloc',
@@ -157,10 +157,30 @@ const unescaped = (text: string): string => text.replace(/%([0-9a-f]{2})/gi, (_,
 
 const extensionOf = (name: string): string => /\.([^.]*)$/.exec(name.replace(/[. ]+$/, ''))?.[1] ?? ''
 
-const launches = (href: string): boolean => {
-  const path = unescaped(href.replace(/[?#].*$/, '')).toLowerCase().replace(/[/\\]+$/, '')
-  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
-  return /\.app[/\\]/.test(path) || name.split(/[:\u0000-\u001f]/).some(part => LAUNCHERS.has(extensionOf(part)))
+const lastName = (path: string): string => path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
+
+const launcherPath = (path: string): boolean => {
+  const lower = path.toLowerCase().replace(/[/\\]+$/, '')
+  return /\.app[/\\]/.test(lower) || lastName(lower).split(/[:\u0000-\u001f]/).some(part => LAUNCHERS.has(extensionOf(part)))
+}
+
+const launches = (href: string): boolean => launcherPath(unescaped(href.replace(/[?#].*$/, '')))
+
+const SNIFF_MAX = 64 * 1024
+
+const PROGRAM_STARTS = ['#!', '\x7fELF', '\xfe\xed\xfa\xce', '\xfe\xed\xfa\xcf', '\xce\xfa\xed\xfe', '\xcf\xfa\xed\xfe', '\xca\xfe\xba\xbe', '\xca\xfe\xba\xbf', '\xbe\xba\xfe\xca', '\xbf\xba\xfe\xca', 'MZ']
+
+export const startsAsProgram = (base64: string): boolean => {
+  const head = atob(base64.slice(0, 8))
+  return PROGRAM_STARTS.some(start => head.startsWith(start))
+}
+
+export type FileLook = 'link' | 'text' | 'sniff'
+
+export const fileLook = (realPath: string, kind: 'file' | 'dir' | 'other', size: number): FileLook => {
+  if (kind === 'other' || launcherPath(realPath)) return 'text'
+  if (kind === 'dir' || /.\.[^.]+$/.test(lastName(realPath.replace(/[/\\]+$/, '')).replace(/[. ]+$/, ''))) return 'link'
+  return size <= SNIFF_MAX ? 'sniff' : 'text'
 }
 
 const localFile = (href: string): boolean => {
@@ -208,7 +228,11 @@ const pathHref = (reach: Reach, path: string): string | undefined => {
   const target = absolutePath(reach, path)
   if (target === undefined || reach.fileLinks === null) return undefined
   const href = `${reach.fileLinks}${encodeURI(target).replace(/[?#]/g, encodeURIComponent)}`
-  return href.length <= LINK_MAX && !launches(href) ? href : undefined
+  if (href.length > LINK_MAX || launches(href)) return undefined
+  const file = target.replace(/^\/(?=[a-z]:)/i, '')
+  if (reach.files?.found.has(file)) return href
+  reach.files?.asked.add(file)
+  return undefined
 }
 
 const toolHref = (reach: Reach, path: string): string | undefined => {
@@ -295,13 +319,23 @@ const hyperlinkBlock = (block: Block, reach: Reach): Block => {
   }
 }
 
-const hyperlinked = new WeakMap<Block, Record<string, Block>>()
+type Linked = { block: Block; asked: string[] }
+
+const hyperlinked = new WeakMap<Block, Record<string, Linked>>()
+
+const linkedBlock = (block: Block, reach: Reach): Linked => {
+  const asked = new Set<string>()
+  return { block: hyperlinkBlock(block, { ...reach, files: reach.files && { found: reach.files.found, asked } }), asked: [...asked] }
+}
 
 const drawable = (block: Block, reach: Reach): Block => {
   const cached = hyperlinked.get(block) ?? {}
   hyperlinked.set(block, cached)
-  const key = `${+reach.httpLinks}${+reach.editorLinks}${reach.fileLinks ?? ''}${reach.pathLinks ? `\0${reach.home}\0${reach.cwd}` : ''}`
-  return (cached[key] ??= hyperlinkBlock(block, reach))
+  const key = `${+reach.httpLinks}${+reach.editorLinks}${reach.fileLinks ?? ''}${reach.pathLinks ? `\0${reach.home}\0${reach.cwd}\0${reach.files ? 'checked' : ''}` : ''}`
+  const hit = cached[key]
+  const linked = hit && !hit.asked.some(file => reach.files?.found.has(file)) ? hit : (cached[key] = linkedBlock(block, reach))
+  for (const file of linked.asked) reach.files?.asked.add(file)
+  return linked.block
 }
 
 const mostLines = (text: string, w: number): number => (text.match(/\S+/g)?.length ?? 0) + Math.ceil(width(text) / w)
